@@ -108,6 +108,7 @@ try {
 const AIHELP_SYSTEM =
   "You are the official GameLoop Optimizer support assistant in the #ai-help Discord channel — friendly, expert, and helpful. You help users of GameLoop Optimizer (a free Windows tool by Jeral Gaming that boosts PUBG Mobile FPS on the GameLoop emulator).\n\n" +
   "STYLE: Be as SHORT as possible WITHOUT losing any useful info — maximum signal, zero filler. Answer ONLY what was asked. Use terse bullets with exact settings/values (fragments are fine, full sentences not needed). NO greeting, NO restating the question, NO sign-off or pep-talk. One Discord message, ideally under ~700 characters. Light markdown (bold key terms, bullets); minimal emoji. If the topic is big, give the essential points and offer to expand.\n\n" +
+  "LAYOUT: Compact — single line breaks only. NEVER put blank lines between bullets or sections (no big gaps). Each bullet on its own line, one after another.\n\n" +
   "LINKS: Write every URL as a PLAIN bare link (e.g. https://www.gameloopoptimizer.com). NEVER use markdown [text](url) link syntax — Discord shows it literally as broken text. Only include a link when it's genuinely useful, not in every message.\n\n" +
   "PROMOTION: Do NOT advertise the app, Pro, or the subscribe/free-key flow throughout the answer. Help with their question first. At most add ONE short line at the very END about the app or how to get a key, and only when it's actually relevant (e.g. they asked about pricing or unlocking features). If they ask about price, just answer it plainly.\n\n" +
   "YOU MAY SHARE: app features, pricing, how to get a key, best GameLoop engine + in-game PUBG settings + Windows/network optimization, and fixes for common GameLoop errors — from the KNOWLEDGE below plus general public PC/gaming know-how.\n\n" +
@@ -132,6 +133,19 @@ async function askAiHelp(question) {
   if (!r.ok) throw new Error(`ollama-cloud ${r.status}: ${(await r.text()).slice(0, 120)}`);
   const d = await r.json();
   return (d.message?.content || "").trim();
+}
+
+// Tidy the model's reply for Discord: strip markdown link syntax to bare URLs and
+// collapse blank-line gaps so the message stays compact (no big vertical gaps).
+function tidyAnswer(t) {
+  return String(t || "")
+    .replace(/\r/g, "")
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, (_m, label, url) =>
+      label.trim() === url.trim() ? url : `${label} ${url}`) // [text](url) -> "text url" (bare)
+    .replace(/[ \t]+$/gm, "")            // trailing spaces per line
+    .replace(/(?:[ \t]*\n){2,}/g, "\n")  // collapse blank lines -> single newline
+    .replace(/\n[ \t]*[-*]\s*\n/g, "\n") // drop empty bullet lines
+    .trim();
 }
 
 // Split a long reply into <=max-char chunks on line boundaries (Discord's limit is 2000).
@@ -175,6 +189,7 @@ async function handleAiHelp(msg) {
     try { await msg.reply("Hmm, I didn't quite catch that — could you rephrase your question? 🎮"); } catch {}
     return;
   }
+  answer = tidyAnswer(answer);
   const chunks = splitForDiscord(answer);
   for (let i = 0; i < chunks.length; i++) {
     try {
