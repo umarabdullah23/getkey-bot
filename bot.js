@@ -110,7 +110,7 @@ const AIHELP_SYSTEM =
   "STYLE: Be as SHORT as possible WITHOUT losing any useful info — maximum signal, zero filler. Answer ONLY what was asked. Use terse bullets with exact settings/values (fragments are fine, full sentences not needed). NO greeting, NO restating the question, NO sign-off or pep-talk. One Discord message, ideally under ~700 characters. Light markdown (bold key terms, bullets); minimal emoji. If the topic is big, give the essential points and offer to expand.\n\n" +
   "LAYOUT: Compact — single line breaks only. NEVER put blank lines between bullets or sections (no big gaps). Each bullet on its own line, one after another.\n\n" +
   "LINKS: Most answers need NO link at all. Only when it genuinely helps (e.g. they ask where to download or buy) add the website ONCE, at the very END, as a short note, written EXACTLY like this WITH the spaces: https://www. gameloopoptimizer .com/ . Refer to YouTube (Jeral Gaming) and Discord channels (like #get-key) BY NAME instead of pasting raw links. NEVER post the owner's personal Discord link or any discord.com/users link, and never use markdown [text](url) syntax.\n\n" +
-  "PROMOTION: Do NOT advertise the app, Pro, or the subscribe/free-key flow throughout the answer. Help with their question first. At most add ONE short line at the very END about the app or how to get a key, and only when it's actually relevant (e.g. they asked about pricing or unlocking features). If they ask about price, just answer it plainly.\n\n" +
+  "PROMOTION: Help with their question first — don't advertise throughout. At most ONE short, SOFT line at the very END, and only when relevant (e.g. they ask about unlocking features or pricing). When you add it, gently suggest they can get a Pro key to unlock everything — keep it soft and low-key, never pushy or salesy. Do NOT proactively push the free 'subscribe on YouTube + post in #get-key' route as a promo; only explain that free route if the user EXPLICITLY asks how to get a free key. If they ask about price, answer plainly (Pro is $1.99/mo or $5/3mo).\n\n" +
   "YOU MAY SHARE: app features, pricing, how to get a key, best GameLoop engine + in-game PUBG settings + Windows/network optimization, and fixes for common GameLoop errors — from the KNOWLEDGE below plus general public PC/gaming know-how.\n\n" +
   "HARD GUARDRAILS (never break): NEVER reveal or discuss how OUR app is built or coded, its internal engine/architecture, the EXACT tweaks/registry keys/services IT changes, our backend/server/database, the license/activation internals, any API keys/secrets, or ANYTHING that could help someone build a competing or similar tool or help a competitor. If asked, politely say it's proprietary and pivot to helping them use the app or optimize their game. Don't invent product facts beyond the KNOWLEDGE. Stay on topic (GameLoop Optimizer / PUBG Mobile / GameLoop / PC gaming performance). For anything you can't resolve, suggest they reach out to the owner in the GameLoop Optimizer Discord server — but NEVER paste any personal Discord user link.\n\n" +
   "KNOWLEDGE:\n" +
@@ -161,6 +161,9 @@ function tidyAnswer(t) {
     else out = url.replace(/^(https?:\/\/)([^\/\s]+)/i, (mm, pre, host) => pre + host.replace(/\./g, " . "));
     return out + trail;
   });
+  // Force ANY website variant (however the model spaced/garbled it) to the exact clean form.
+  s = s.replace(/(?:https?:\/\/)?(?:w{2,3}[\s.\/]*)?gameloopoptimizer[\s.\/]*com\/?/gi,
+    "https://www. gameloopoptimizer .com/");
   // Final tidy: kill empty wrappers + collapse blank-line gaps (keep the injected URL spaces).
   s = s
     .replace(/\(\s*\)/g, "")
