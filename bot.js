@@ -142,6 +142,10 @@ function tidyAnswer(t) {
     .replace(/\r/g, "")
     .replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, (_m, label, url) =>
       label.trim() === url.trim() ? url : `${label} ${url}`) // [text](url) -> "text url" (bare)
+    .replace(/(?<!<)\bhttps?:\/\/[^\s<>]+/g, (m) => {         // wrap bare URLs in <> so
+      const core = m.replace(/[.,;:!?)\]]+$/, "");            // Discord keeps them clickable
+      return "<" + core + ">" + m.slice(core.length);         // but suppresses preview cards
+    })
     .replace(/[ \t]+$/gm, "")            // trailing spaces per line
     .replace(/(?:[ \t]*\n){2,}/g, "\n")  // collapse blank lines -> single newline
     .replace(/\n[ \t]*[-*]\s*\n/g, "\n") // drop empty bullet lines
