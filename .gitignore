@@ -1,0 +1,4 @@
+node_modules/
+.discord-token
+bot-state.json
+.env
