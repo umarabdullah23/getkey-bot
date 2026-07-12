@@ -91,6 +91,101 @@ function parseVerdict(text) {
   }
 }
 
+// ---- #ai-help AI support agent --------------------------------------------
+// Answers user questions in #ai-help from a PUBLIC knowledge base (app info,
+// pricing, optimization guides, fixes) with hard guardrails against leaking any
+// proprietary internals. Uses Ollama Cloud chat (key from env — never in the repo).
+const AIHELP_CHANNEL = process.env.AIHELP_CHANNEL || "1525938944246550558";
+const OLLAMA_CLOUD_URL = process.env.OLLAMA_CLOUD_URL || "https://ollama.com/api/chat";
+const OLLAMA_CLOUD_API_KEY = process.env.OLLAMA_CLOUD_API_KEY || "";
+const OLLAMA_CHAT_MODEL = process.env.OLLAMA_CHAT_MODEL || "gemma3:27b";
+let AIHELP_KNOWLEDGE = "";
+try {
+  AIHELP_KNOWLEDGE = fs.readFileSync(path.join(__dirname, "ai-help-knowledge.md"), "utf8");
+} catch (e) {
+  AIHELP_KNOWLEDGE = "(knowledge file missing)";
+}
+const AIHELP_SYSTEM =
+  "You are the official GameLoop Optimizer support assistant in the #ai-help Discord channel — friendly, expert, and SUPER HELPFUL. You help users of GameLoop Optimizer (a free Windows tool by Jeral Gaming that boosts PUBG Mobile FPS on the GameLoop emulator).\n\n" +
+  "STYLE: Give ULTRA-DETAILED, thorough, step-by-step answers. Use Discord markdown (short **bold headers**, bullet lists, exact settings/numbers, clear steps; light emoji ok). Be genuinely useful, like an expert who wants them to win. Keep each reply under ~1800 characters; if a topic is huge, give the most impactful parts and offer to go deeper.\n\n" +
+  "YOU MAY SHARE (freely, in depth): app features, pricing, how to get a key, best GameLoop engine + in-game PUBG settings + Windows/network optimization, and detailed fixes for common GameLoop errors — from the KNOWLEDGE below plus general public PC/gaming know-how.\n\n" +
+  "HARD GUARDRAILS (never break): NEVER reveal or discuss how OUR app is built or coded, its internal engine/architecture, the EXACT tweaks/registry keys/services IT changes, our backend/server/database, the license/activation internals, any API keys/secrets, or ANYTHING that could help someone build a competing or similar tool or help a competitor. If asked, politely say it's proprietary and pivot to helping them use the app or optimize their game. Don't invent product facts beyond the KNOWLEDGE. Stay on topic (GameLoop Optimizer / PUBG Mobile / GameLoop / PC gaming performance). For anything you can't resolve, point them to the owner umarabdullahmansoori (https://discord.com/users/524878568845737985).\n\n" +
+  "KNOWLEDGE:\n" +
+  AIHELP_KNOWLEDGE;
+
+async function askAiHelp(question) {
+  const r = await fetch(OLLAMA_CLOUD_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${OLLAMA_CLOUD_API_KEY}` },
+    body: JSON.stringify({
+      model: OLLAMA_CHAT_MODEL,
+      messages: [
+        { role: "system", content: AIHELP_SYSTEM },
+        { role: "user", content: question.slice(0, 1500) },
+      ],
+      stream: false,
+      options: { temperature: 0.35 },
+    }),
+  });
+  if (!r.ok) throw new Error(`ollama-cloud ${r.status}: ${(await r.text()).slice(0, 120)}`);
+  const d = await r.json();
+  return (d.message?.content || "").trim();
+}
+
+// Split a long reply into <=max-char chunks on line boundaries (Discord's limit is 2000).
+function splitForDiscord(text, max = 1900) {
+  if (text.length <= max) return [text];
+  const parts = [];
+  let cur = "";
+  for (const block of text.split("\n")) {
+    if (block.length > max) {
+      if (cur) { parts.push(cur); cur = ""; }
+      for (let i = 0; i < block.length; i += max) parts.push(block.slice(i, i + max));
+    } else if ((cur + "\n" + block).length > max) {
+      parts.push(cur);
+      cur = block;
+    } else {
+      cur = cur ? cur + "\n" + block : block;
+    }
+  }
+  if (cur) parts.push(cur);
+  return parts;
+}
+
+async function handleAiHelp(msg) {
+  const question = (msg.content || "").trim();
+  if (!question) return;
+  if (!OLLAMA_CLOUD_API_KEY) {
+    log("ai-help: OLLAMA_CLOUD_API_KEY not set — cannot answer");
+    return;
+  }
+  log(`ai-help: Q from ${msg.author.tag}: ${question.slice(0, 70)}`);
+  try { await msg.channel.sendTyping(); } catch {}
+  let answer;
+  try {
+    answer = await askAiHelp(question);
+  } catch (e) {
+    log(`  ai-help error: ${e.message}`);
+    try { await msg.reply("Sorry — I hit a hiccup 😅 Please try again in a moment, or contact the owner <https://discord.com/users/524878568845737985> for help."); } catch {}
+    return;
+  }
+  if (!answer) {
+    try { await msg.reply("Hmm, I didn't quite catch that — could you rephrase your question? 🎮"); } catch {}
+    return;
+  }
+  const chunks = splitForDiscord(answer);
+  for (let i = 0; i < chunks.length; i++) {
+    try {
+      if (i === 0) await msg.reply(chunks[i]);
+      else await msg.channel.send(chunks[i]);
+    } catch (e) {
+      log(`  ai-help send failed: ${e.message}`);
+      break;
+    }
+  }
+  log(`  ai-help answered (${answer.length} chars in ${chunks.length} msg)`);
+}
+
 const STATE_FILE = path.join(__dirname, "bot-state.json");
 function loadState() {
   let s = {};
@@ -409,9 +504,15 @@ client.once(Events.ClientReady, async (c) => {
 
 client.on(Events.MessageCreate, async (msg) => {
   try {
+    if (msg.author.bot) return;
+    // #ai-help AI support agent (text questions, its own channel).
+    if (msg.channelId === AIHELP_CHANNEL) {
+      await handleAiHelp(msg);
+      return;
+    }
+    // #get-key / #bot-test image verification.
     const kind = WATCH.get(msg.channelId);
     if (!kind) return;
-    if (msg.author.bot) return;
     if (!imageAttachment(msg)) return;
     await handle(msg, kind);
   } catch (e) {
