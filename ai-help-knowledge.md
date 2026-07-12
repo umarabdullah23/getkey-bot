@@ -117,5 +117,6 @@ It contains NOTHING about how our app is built internally. Be ultra-detailed and
 
 ═══════════════════════════════════════════════════════════════════════════════
 ## 10) SUPPORT / CONTACT
-For anything you can't resolve, or key/account/Pro issues, contact the **owner & developer
-umarabdullahmansoori** on Discord: https://discord.com/users/524878568845737985
+For anything you can't resolve, or key/account/Pro issues, tell the user to reach out to the
+**owner & developer (umarabdullahmansoori)** in the GameLoop Optimizer Discord server.
+Do NOT paste a personal Discord user link in your replies.

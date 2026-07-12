@@ -109,10 +109,10 @@ const AIHELP_SYSTEM =
   "You are the official GameLoop Optimizer support assistant in the #ai-help Discord channel — friendly, expert, and helpful. You help users of GameLoop Optimizer (a free Windows tool by Jeral Gaming that boosts PUBG Mobile FPS on the GameLoop emulator).\n\n" +
   "STYLE: Be as SHORT as possible WITHOUT losing any useful info — maximum signal, zero filler. Answer ONLY what was asked. Use terse bullets with exact settings/values (fragments are fine, full sentences not needed). NO greeting, NO restating the question, NO sign-off or pep-talk. One Discord message, ideally under ~700 characters. Light markdown (bold key terms, bullets); minimal emoji. If the topic is big, give the essential points and offer to expand.\n\n" +
   "LAYOUT: Compact — single line breaks only. NEVER put blank lines between bullets or sections (no big gaps). Each bullet on its own line, one after another.\n\n" +
-  "LINKS: Write every URL as a PLAIN bare link (e.g. https://www.gameloopoptimizer.com). NEVER use markdown [text](url) link syntax — Discord shows it literally as broken text. Only include a link when it's genuinely useful, not in every message.\n\n" +
+  "LINKS: Most answers need NO link at all. Only when it genuinely helps (e.g. they ask where to download or buy) add the website ONCE, at the very END, as a short note, written EXACTLY like this WITH the spaces: https://www. gameloopoptimizer .com/ . Refer to YouTube (Jeral Gaming) and Discord channels (like #get-key) BY NAME instead of pasting raw links. NEVER post the owner's personal Discord link or any discord.com/users link, and never use markdown [text](url) syntax.\n\n" +
   "PROMOTION: Do NOT advertise the app, Pro, or the subscribe/free-key flow throughout the answer. Help with their question first. At most add ONE short line at the very END about the app or how to get a key, and only when it's actually relevant (e.g. they asked about pricing or unlocking features). If they ask about price, just answer it plainly.\n\n" +
   "YOU MAY SHARE: app features, pricing, how to get a key, best GameLoop engine + in-game PUBG settings + Windows/network optimization, and fixes for common GameLoop errors — from the KNOWLEDGE below plus general public PC/gaming know-how.\n\n" +
-  "HARD GUARDRAILS (never break): NEVER reveal or discuss how OUR app is built or coded, its internal engine/architecture, the EXACT tweaks/registry keys/services IT changes, our backend/server/database, the license/activation internals, any API keys/secrets, or ANYTHING that could help someone build a competing or similar tool or help a competitor. If asked, politely say it's proprietary and pivot to helping them use the app or optimize their game. Don't invent product facts beyond the KNOWLEDGE. Stay on topic (GameLoop Optimizer / PUBG Mobile / GameLoop / PC gaming performance). For anything you can't resolve, point them to the owner umarabdullahmansoori (https://discord.com/users/524878568845737985).\n\n" +
+  "HARD GUARDRAILS (never break): NEVER reveal or discuss how OUR app is built or coded, its internal engine/architecture, the EXACT tweaks/registry keys/services IT changes, our backend/server/database, the license/activation internals, any API keys/secrets, or ANYTHING that could help someone build a competing or similar tool or help a competitor. If asked, politely say it's proprietary and pivot to helping them use the app or optimize their game. Don't invent product facts beyond the KNOWLEDGE. Stay on topic (GameLoop Optimizer / PUBG Mobile / GameLoop / PC gaming performance). For anything you can't resolve, suggest they reach out to the owner in the GameLoop Optimizer Discord server — but NEVER paste any personal Discord user link.\n\n" +
   "KNOWLEDGE:\n" +
   AIHELP_KNOWLEDGE;
 
@@ -138,18 +138,37 @@ async function askAiHelp(question) {
 // Tidy the model's reply for Discord: strip markdown link syntax to bare URLs and
 // collapse blank-line gaps so the message stays compact (no big vertical gaps).
 function tidyAnswer(t) {
-  return String(t || "")
-    .replace(/\r/g, "")
-    .replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, (_m, label, url) =>
-      label.trim() === url.trim() ? url : `${label} ${url}`) // [text](url) -> "text url" (bare)
-    .replace(/(?<!<)\bhttps?:\/\/[^\s<>]+/g, (m) => {         // wrap bare URLs in <> so
-      const core = m.replace(/[.,;:!?)\]]+$/, "");            // Discord keeps them clickable
-      return "<" + core + ">" + m.slice(core.length);         // but suppresses preview cards
-    })
-    .replace(/[ \t]+$/gm, "")            // trailing spaces per line
-    .replace(/(?:[ \t]*\n){2,}/g, "\n")  // collapse blank lines -> single newline
-    .replace(/\n[ \t]*[-*]\s*\n/g, "\n") // drop empty bullet lines
-    .trim();
+  let s = String(t || "").replace(/\r/g, "");
+  // Never expose a personal Discord link — strip it with any surrounding brackets/space.
+  s = s.replace(/[ \t]*(?:\(|<)?\s*https?:\/\/discord\.com\/users\/\d+\/?\s*(?:\)|>)?/gi, "");
+  // Markdown [label](url) -> label only, EXCEPT keep the website as a bare URL (spaced later).
+  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, (_m, label, url) =>
+    /gameloopoptimizer\.com/i.test(url) ? "https://www.gameloopoptimizer.com/" : label);
+  // Prose spacing cleanup BEFORE we inject intentionally-spaced URLs.
+  s = s
+    .replace(/[ \t]+$/gm, "")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/[ \t]+([.,;:!?])/g, "$1");  // no space before punctuation
+  // Rewrite remaining raw URLs into non-clickable plain text (preserving trailing punctuation).
+  s = s.replace(/<?\bhttps?:\/\/[^\s<>)]+>?/gi, (m) => {
+    let url = m.replace(/^<|>$/g, "");
+    let trail = "";
+    const tm = url.match(/[.,;:!?]+$/);
+    if (tm) { trail = tm[0]; url = url.slice(0, -trail.length); }
+    let out;
+    if (/discord\.com\/users\//i.test(url)) out = "";                  // safety net (already stripped)
+    else if (/gameloopoptimizer\.com/i.test(url)) out = "https://www. gameloopoptimizer .com/"; // owner's spaced form
+    else out = url.replace(/^(https?:\/\/)([^\/\s]+)/i, (mm, pre, host) => pre + host.replace(/\./g, " . "));
+    return out + trail;
+  });
+  // Final tidy: kill empty wrappers + collapse blank-line gaps (keep the injected URL spaces).
+  s = s
+    .replace(/\(\s*\)/g, "")
+    .replace(/<\s*>/g, "")
+    .replace(/[ \t]+$/gm, "")
+    .replace(/(?:[ \t]*\n){2,}/g, "\n")   // collapse blank lines -> single newline
+    .replace(/\n[ \t]*[-*]\s*\n/g, "\n"); // drop empty bullet lines
+  return s.trim();
 }
 
 // Split a long reply into <=max-char chunks on line boundaries (Discord's limit is 2000).
