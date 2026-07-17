@@ -148,10 +148,13 @@ const OPENROUTER_CHAT_MODELS = (
 const SPAM_MODEL = process.env.SPAM_MODEL || "gemma4:31b"; // multimodal (gpt-oss chat model is text-only)
 const SPAM_THRESHOLD = Number(process.env.SPAM_THRESHOLD || "0.9"); // delete only at >= this confidence
 const GENERAL_MODERATION = process.env.GENERAL_MODERATION !== "0"; // set 0 to grant-only, never delete
-// On a DELETED spam image, optionally also REMOVE (ban) the member — but ONLY after a
-// SECOND, stricter, independent "are you 100% certain this is abuse" check passes (a
-// real user must never be banned on one fluke). Set GENERAL_BAN=0 to only ever delete.
+// Ban policy: a SINGLE off-topic image is only DELETED — never a ban (it might be a
+// one-off joke, not abuse). We only REMOVE (ban) a REAL spammer: someone who keeps
+// flooding the channel — i.e. they've had >= BAN_AFTER_SPAMS spam images deleted — AND
+// a second, stricter, independent "are you 100% certain this is abuse" check passes.
+// Set GENERAL_BAN=0 to only ever delete; BAN_AFTER_SPAMS tunes how many strikes = a ban.
 const GENERAL_BAN = process.env.GENERAL_BAN !== "0";
+const BAN_AFTER_SPAMS = Math.max(1, Number(process.env.BAN_AFTER_SPAMS || "3"));
 // Classifier prompt for a #general image. Deliberately CONSERVATIVE about "spam"
 // because a false positive DELETES a real user's message.
 const SPAM_PROMPT =
@@ -382,7 +385,12 @@ function loadState() {
   } catch {
     s = {};
   }
-  return { processed: s.processed || {}, granted: s.granted || {}, flagged: s.flagged || {} };
+  return {
+    processed: s.processed || {},
+    granted: s.granted || {},
+    flagged: s.flagged || {},
+    spammers: s.spammers || {}, // userId -> count of deleted spam images (for repeat-offender bans)
+  };
 }
 function saveState(s) {
   fs.writeFileSync(STATE_FILE, JSON.stringify(s, null, 2));
@@ -689,11 +697,21 @@ async function moderateGeneralImage(msg, base64) {
   log(`  (general) classify=${verdict.category} conf=${verdict.spam_confidence} — ${verdict.reason}`);
   if (!(verdict.category === "spam" && verdict.spam_confidence >= SPAM_THRESHOLD)) return;
 
+  // A single off-topic image is only ever DELETED — never a ban (could be a one-off).
   await deleteSpam(msg, verdict);
 
-  // Escalation: on a DELETED spam image, run the strict independent confirm and only
-  // then remove (ban) the member. Two agreeing gates ≈ "100% confirmation".
+  // BAN only a REAL spammer: count this user's deleted spam images and only remove them
+  // once they've actually flooded the channel (>= BAN_AFTER_SPAMS), AND a strict,
+  // independent check is 100% certain it's abuse. Both gates ≈ real proof of spamming.
   if (!GENERAL_BAN) return;
+  const uid = msg.author.id;
+  state.spammers[uid] = (state.spammers[uid] || 0) + 1;
+  saveState(state);
+  const count = state.spammers[uid];
+  if (count < BAN_AFTER_SPAMS) {
+    log(`  (general) spam ${count}/${BAN_AFTER_SPAMS} from ${msg.author.tag} — deleted only (not a repeat spammer yet)`);
+    return;
+  }
   let confirm;
   try {
     confirm = await confirmBanImage(base64);
@@ -702,7 +720,9 @@ async function moderateGeneralImage(msg, base64) {
     return;
   }
   if (confirm.ban && confirm.certain) {
-    await banSpammer(msg, confirm.reason || verdict.reason);
+    await banSpammer(msg, `repeat spam (${count}x): ${confirm.reason || verdict.reason}`);
+    delete state.spammers[uid]; // reset after acting so a later rejoin starts fresh
+    saveState(state);
   } else {
     log(`  (general) ban NOT confirmed (ban=${confirm.ban} certain=${confirm.certain}) — deleted only`);
   }
@@ -731,7 +751,15 @@ async function handle(msg, kind) {
 
   let result;
   try {
-    result = await callGrant({ username, imageBase64: image.base64, mimeType: image.mime, dryRun: DRY_RUN });
+    // Big images blow past the grant endpoint's request-body limit (Vercel ~4.5MB) → a
+    // 413 that used to make large proofs fail / large spam escape. For those, send just
+    // the image URL and let the endpoint fetch it server-side; small ones send the
+    // base64 the bot already has (fast, no re-fetch).
+    const grantBody =
+      image.base64.length > 3_000_000
+        ? { username, imageUrl: att.url, dryRun: DRY_RUN }
+        : { username, imageBase64: image.base64, mimeType: image.mime, dryRun: DRY_RUN };
+    result = await callGrant(grantBody);
   } catch (e) {
     log(`  ! network error: ${e.message} — will retry later`);
     return; // leave unprocessed → retried on a later event/restart
@@ -743,11 +771,13 @@ async function handle(msg, kind) {
   // for manual and leave UNPROCESSED so a transient outage self-heals on restart.
   if (!ok || data.error) {
     log(`  cloud vision error ${status}: ${String(data.error || "").slice(0, 90)}`);
-    // #general: never post a manual-review reply and never delete on an unclear
-    // result — a cloud outage must not touch a legit message. Leave it UNPROCESSED
-    // so a later attempt can still grant a real proof.
+    // #general: the grant endpoint failed (often a 413 — image too big for its body
+    // limit — or a vision outage). Don't post a reply, but STILL run the LOCAL spam
+    // classifier (Ollama Cloud direct, which takes the full image) so big spam images
+    // are still moderated. moderateGeneralImage fails safe on its own.
     if (isGeneral) {
-      log("  (general) vision unavailable — leaving message untouched");
+      log("  (general) endpoint vision unavailable — running local spam check");
+      await moderateGeneralImage(msg, image.base64);
       return;
     }
     if (OLLAMA_ENABLED && !DRY_RUN) {
