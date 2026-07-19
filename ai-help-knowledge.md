@@ -280,7 +280,117 @@ lower engine Resolution to 720p & Memory to 4 GB · last resort: uninstall + reb
 - *Stuck on loading screen (no spawn)* — wait the full load once; wired internet; Repair; Graphics=Smooth + Frame Rate Medium; reinstall PUBG if it keeps hanging.
 
 ═══════════════════════════════════════════════════════════════════════════════
-## 12) SUPPORT
+## 12) FREE KEY — HOW VERIFICATION & DELIVERY ACTUALLY WORK
+This is the REAL process. It is one of the most-asked topics ("why wasn't my screenshot
+validated?", "where's my key?"). **Answer ONLY from this section — never invent
+validation rules.** There is NO rule about screenshot age/recency, file type, image
+resolution, your YouTube channel being public/private, or your account age. If someone
+claims one, it is false.
+
+**How to get a free Subscriber key**
+1. Subscribe to **Jeral Gaming** on YouTube (the channel is @jeralgaming853 / "JeralGaming").
+2. Post a screenshot showing you're subscribed in **#get-key** (**#general** also works —
+   both are checked automatically).
+3. An AI checks the image within seconds and, if it passes, a bot **DMs you the key**.
+
+**What a valid screenshot looks like**
+- It shows the **Jeral Gaming** channel with the subscribe button in the **SUBSCRIBED
+  state — a muted/GREY pill button** (usually with a bell 🔔 and/or a "v" chevron).
+  It is **grey, never green**. A solid **RED "Subscribe"** button = not subscribed yet.
+- **Any language works** (Arabic, Russian, Urdu, Hindi, Spanish, …) — it's judged by the
+  button's visual state, not the words. Mobile or desktop, light or dark theme all fine.
+- The channel appearing in your **Subscriptions list** also counts.
+
+**"My screenshot wasn't validated / I got a 'manual check' reply" — what's really going on**
+Work through these in order; the FIRST one is by far the most common:
+- **Your Discord DMs are closed** (the #1 cause by a wide margin). The key is delivered by
+  DM, so if you don't accept DMs from server members the bot can't reach you — even though
+  you passed verification. **Fix:** User Settings → **Privacy & Safety** → allow **Direct
+  Messages** from server members (on mobile: tap the server name → ⋯ → Privacy Settings),
+  then post again — your key is reserved and arrives automatically, and you do NOT need to
+  get verified again.
+- **You subscribed to a different channel.** It must be **Jeral Gaming** specifically.
+- **The button in the shot is still red** (you weren't subscribed yet when you captured it).
+- **The image isn't a YouTube subscribe screen at all** (wrong window, a game screenshot).
+- **One key per person** — if you already got a key, the bot re-sends the SAME key rather
+  than issuing a new one. That's expected, not a failure.
+- If it still doesn't work, it goes to a human for manual review — a mod will sort it out.
+  Ask in the server rather than re-posting the same screenshot many times.
+
+**Do NOT tell users** to re-upload repeatedly, change file format, retake at a different
+resolution, wait for the image to "cache", or make their YouTube profile public — none of
+those are real requirements and none of them fix anything.
+
+═══════════════════════════════════════════════════════════════════════════════
+## 13) OFFICIAL GAMELOOP FACTS (from Tencent/GameLoop's own docs + support desk)
+Sourced 2026-07-19 from GameLoop's OFFICIAL support Discord and gameloop.com/blog/faqs
+(their "Best Settings Guide", "Fix Incompatible Hyper-V Detection", "Stuck at 98%").
+These are GameLoop's own words, so you can state them confidently — but still never
+promise an FPS number.
+
+**Render mode — what OFFICIAL docs actually say (use this, it's more precise than guesses)**
+- **OpenGL+** — focused on fast rendering, **widely compatible, the best choice for most
+  games**. Important: it **does NOT support anti-aliasing in PUBG Mobile** and similar
+  games — so if a user wants AA, they must use DirectX+.
+- **DirectX+** — renders graphics, audio and network precisely, and supports **Vertex
+  Blending** (smoother textures where supported). **Lacks compatibility on a few games.**
+- **Auto** — lets the **Smart Turbo AOW engine** pick the engine per game.
+- Still true: there's no universal best — have them try both and keep the steadier one.
+
+**Other engine settings (official meanings)**
+- **Anti-aliasing** levels are **Off / Balanced (2× MSAA) / Ultra (4× MSAA)**.
+- **Enable rendering cache** — renders advanced in-game textures, improves visuals and
+  removes graphical glitches. **Force global rendering cache** — faster visual feedback
+  than the renderer can produce full frames for (approximate images during motion).
+  **Enable rendering optimization** — better visuals using more shaders.
+- **Vertical sync** — avoids screen tearing when FPS doesn't match the monitor refresh.
+- **Audio Channel** — **Waveout** (widely compatible but dated) vs **DirectSound**
+  (newer, **better latency**). Suggest DirectSound for lower audio delay.
+  **Bluetooth audio devices support ONE-WAY communication only.**
+- **Model → custom phone model:** GameLoop's own note is that **ROG 2 is preferred** over
+  other models for the widest compatibility.
+- **Game Definition** (PUBG Mobile / COD Mobile / APEX Mobile only), with GameLoop's own
+  GPU guidance: **SD 720P** for no GPU or weaker than a GTX 660 · **HD 1080P** for GTX 660
+  or higher · **FHD 2K** for GTX 1060 6GB or higher.
+- Settings only apply after a **full GameLoop restart** (already covered in §4).
+
+**Antivirus is the single most common cause of GameLoop errors (official position)**
+GameLoop says a blocked/deleted **driver file** is what causes *Error Code 1 / 5* and
+*stuck at 98%*. The official fix is to exclude GameLoop rather than just "pause AV":
+- Fully exit GameLoop **including the tray icon**.
+- Windows Security → **Virus & threat protection settings** → Manage settings →
+  **Exclusions** → Add or remove exclusions → **Add an exclusion → Folder**.
+- Add the install folder **`C:\Program Files\TxGameAssistant`** AND the temp folder
+  **`C:\Temp`** (or `D:\Temp`). Retail AVs need their own exclusion steps.
+- Restart the PC (some settings only apply after a restart), then retry.
+- Still failing → uninstall from Control Panel and **reinstall on a different drive**,
+  using the installer from https://www. gameloop .com/ only.
+- Official advanced step for **Error Code 1 / 5**: search Windows for **"core isolation"**
+  and **turn it off**, restart, then retry.
+
+**"Incompatible Hyper-V" error (official fix)**
+Hyper-V is Windows' own virtualization and it **conflicts with GameLoop's** — it blocks
+GameLoop from reaching the hardware. Fix: Start → **"Turn Windows features on or off"** →
+turn OFF **Hyper-V** (incl. Hyper-V Management Tools + Platform), **Virtual Machine
+Platform**, and **Windows Hypervisor Platform** → **restart Windows**. Also stop or
+uninstall other virtualization apps (**VMware, VirtualBox**) — they conflict the same way.
+
+**Low-end stutter tip (official)**
+Delete the shader cache: GameLoop install folder → **TxGameAssistant → UI →
+ShaderCache** (delete the folder if present), then relaunch.
+
+**Enabling VT (virtualization)** — GameLoop publishes per-brand BIOS guides for **ASUS,
+Lenovo, HP, Dell and Gigabyte (AMD)** motherboards in their FAQs. If a user can't find
+the VT/SVM setting, tell them their motherboard brand has a step-by-step guide in
+GameLoop's official FAQs and describe the general path (BIOS → Advanced → CPU
+Configuration → Intel VT-x / AMD SVM → Enabled → Save & Exit).
+
+**Official GameLoop support channels** (for GameLoop *emulator* problems that aren't ours
+to fix): GameLoop's own FAQs at gameloop.com, GameLoop's official Discord, and their
+Facebook page. Our tool doesn't control the emulator's own bugs or account/ban issues.
+
+═══════════════════════════════════════════════════════════════════════════════
+## 14) SUPPORT
 For anything you can't resolve, or key/account/Pro issues, tell the user to reach out to the
 **owner & developer (umarabdullahmansoori)** in the GameLoop Optimizer Discord server.
 Do NOT paste a personal Discord user link in your replies.
