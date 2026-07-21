@@ -48,6 +48,12 @@ const CH = {
   getkey: "1520501551951773716",
   bottest: "1525793934272499742",
   general: "1508846087367032943",
+  // Created 2026-07-21 (partner batch). Baked in so the bot uses the REAL channels
+  // immediately on deploy — no name-lookup and no Manage Channels needed. Env
+  // RELEASES_CHANNEL / ISSUES_CHANNEL still override; if the ids ever change, the
+  // by-name auto-create fallback (ensureChannel) still finds/creates them.
+  releases: "1529224340090912900",
+  issues: "1529224756073730088",
 };
 // Fixed DM recipient for #bot-test so posting there always delivers a test key
 // regardless of who posted. Defaults to the OWNER (umarabdullahmansoori) — the bot
@@ -166,6 +172,58 @@ const SPAM_PROMPT =
 const CONFIRM_BAN_PROMPT =
   "You are deciding whether to BAN (permanently remove) a user from a PUBG Mobile / GameLoop gaming Discord for the IMAGE they posted in #general. A ban is severe, so confirm ONLY if you are 100% CERTAIN this image is deliberate off-topic spam/abuse — a meme, a celebrity/influencer photo (e.g. MrBeast), an advertisement, a scam, or unrelated flooding — with ZERO chance it is a legitimate gaming image, a PUBG/GameLoop screenshot, or a YouTube subscription proof. If the image is merely blank, unreadable, corrupt, low-quality, or random noise (NOT a clear meme/celebrity/ad/scam), do NOT confirm — it may be an accidental or broken upload. If there is ANY doubt at all, do NOT confirm. Respond with ONLY compact JSON, no markdown: {\"ban\": true|false, \"certain\": true|false, \"reason\": \"<=12 words\"}";
 
+// ---- #releases auto-announcer ---------------------------------------------
+// The always-on bot POLLS the public release manifest and posts a note to #releases
+// the moment a NEW version appears. Nothing in the release script has to change — the
+// manifest is the auto-updater's own source, so this stays correct for the app's
+// lifetime. Deduped by version in bot-state so each release is announced exactly once,
+// and the FIRST poll after a fresh deploy only sets a baseline (never spam-announces
+// whatever version happens to be current). RELEASE_MANIFEST_URL can be a comma list.
+const DEFAULT_RELEASE_MANIFEST_URLS = [
+  // The PUBLIC release repo's manifest — the exact JSON the Electron auto-updater reads
+  // (client_app/updater.js). Public, no token, no GitHub API rate limit. Shape:
+  // { version, url, urls, sha512, notes }. Overridable via RELEASE_MANIFEST_URL (comma
+  // list). The raw CDN URL is primary; the release-asset URL is the fallback.
+  "https://raw.githubusercontent.com/umarabdullah23/GameLoop-Optimizer-PUBG-Mobile/main/latest-portable.json",
+  "https://github.com/umarabdullah23/GameLoop-Optimizer-PUBG-Mobile/releases/latest/download/latest-portable.json",
+];
+const RELEASE_MANIFEST_URLS = (
+  process.env.RELEASE_MANIFEST_URL || DEFAULT_RELEASE_MANIFEST_URLS.join(",")
+)
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+const RELEASE_POLL_MS = Math.max(60_000, Number(process.env.RELEASE_POLL_MS || 15 * 60 * 1000)); // 15 min
+const RELEASE_ANNOUNCE = process.env.RELEASE_ANNOUNCE !== "0"; // set 0 to disable
+// First-run behaviour: default is to set a silent baseline and only announce versions
+// that appear AFTER. Set RELEASE_ANNOUNCE_CURRENT=1 to announce the current one once.
+const RELEASE_ANNOUNCE_CURRENT = process.env.RELEASE_ANNOUNCE_CURRENT === "1";
+
+// ---- #issues → GitHub tickets ---------------------------------------------
+// A user describes a bug/problem in #issues; the bot AI-parses it into a clean
+// {title, body, labels} and opens a GitHub issue, then replies with the ticket link.
+// Fully automatic + lifetime. Needs a GITHUB_TOKEN (repo/issues scope) and the target
+// repo — both from env; without them it no-ops gracefully (logs, never crashes).
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN || "";
+// Default target = the PUBLIC product repo (owner-controlled, user-facing, has a
+// .github/ dir). Override with GITHUB_ISSUES_REPO. The token is NOT in the repo — the
+// owner sets GITHUB_TOKEN (repo/issues scope) on Render; without it the feature no-ops.
+const GITHUB_ISSUES_REPO =
+  process.env.GITHUB_ISSUES_REPO || "umarabdullah23/GameLoop-Optimizer-PUBG-Mobile"; // "owner/repo"
+const ISSUES_MODERATION = process.env.ISSUES_MODERATION !== "0";
+// Turns a raw #issues message into a structured GitHub issue. The channel takes BOTH
+// bug reports AND suggestions/feature requests. is_issue=false filters out chatter so we
+// never file a ticket for "thanks"/"hi". Labels are restricted to GitHub's DEFAULT set
+// (bug/enhancement/question — present in every repo) so issue creation never fails on an
+// unknown label.
+const ISSUE_PARSE_PROMPT =
+  "You convert a user's Discord message (from the #issues channel) into a GitHub issue for GameLoop Optimizer — a free Windows tool that boosts PUBG Mobile FPS on the GameLoop emulator. The channel is for BUG REPORTS and PROBLEMS **as well as SUGGESTIONS / feature requests / ideas** — all of these are actionable. Respond with ONLY compact JSON, no markdown:\n" +
+  '{"is_issue": true|false, "kind": "bug"|"suggestion"|"question", "title": "<concise 5-10 word title>", "body": "<clear neutral restatement in English: for a bug — what happened, any steps, expected vs got; for a suggestion — what they want and why. PRESERVE the user\'s concrete details — exact error text, PC specs, GameLoop/PUBG version, the feature idea>", "labels": ["bug"|"enhancement"|"question"], "severity": "low"|"medium"|"high"}\n' +
+  "Rules:\n" +
+  "- is_issue=true for ANY real bug report, problem, OR suggestion/feature request/idea. is_issue=false ONLY for greetings, thanks, emoji, or vague one-liners that state no problem, request, or idea.\n" +
+  "- Keep the title specific and short. Write the body as neutral, structured English (translate if the user wrote another language) but never drop specifics.\n" +
+  "- Pick ONE primary label from ONLY these three (they exist in every repo): 'bug' for crashes/errors/wrong behaviour/key/activation problems, 'enhancement' for a suggestion / feature request / idea, 'question' otherwise. A suggestion ALWAYS gets 'enhancement'.";
+
 let AIHELP_KNOWLEDGE = "";
 try {
   AIHELP_KNOWLEDGE = fs.readFileSync(path.join(__dirname, "ai-help-knowledge.md"), "utf8");
@@ -204,18 +262,18 @@ const AIHELP_MAX_TOKENS = Number(process.env.AIHELP_MAX_TOKENS || "1000");
 // answers tight (the persona asks for ~700-1400 chars) AND fast — an uncapped
 // gpt-oss:120b can take ~35s on a long table; capped it lands in ~10s (the typing
 // keep-alive covers it). Throws on HTTP error OR empty reply so the caller rotates on.
-async function ollamaChatOnce(model, question) {
+async function ollamaChatOnce(model, question, system = AIHELP_SYSTEM, maxTokens = AIHELP_MAX_TOKENS, temperature = 0.35) {
   const r = await fetch(OLLAMA_CLOUD_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${OLLAMA_CLOUD_API_KEY}` },
     body: JSON.stringify({
       model,
       messages: [
-        { role: "system", content: AIHELP_SYSTEM },
+        { role: "system", content: system },
         { role: "user", content: question },
       ],
       stream: false,
-      options: { temperature: 0.35, num_predict: AIHELP_MAX_TOKENS },
+      options: { temperature, num_predict: maxTokens },
     }),
   });
   if (!r.ok) throw new Error(`ollama-cloud ${model} ${r.status}: ${(await r.text()).slice(0, 90)}`);
@@ -226,16 +284,16 @@ async function ollamaChatOnce(model, question) {
 }
 
 // One OpenRouter chat attempt (OpenAI-compatible) — the cross-provider fallback.
-async function openrouterChatOnce(model, question) {
+async function openrouterChatOnce(model, question, system = AIHELP_SYSTEM, maxTokens = AIHELP_MAX_TOKENS, temperature = 0.35) {
   const r = await fetch(OPENROUTER_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${OPENROUTER_API_KEY}` },
     body: JSON.stringify({
       model,
-      temperature: 0.35,
-      max_tokens: AIHELP_MAX_TOKENS,
+      temperature,
+      max_tokens: maxTokens,
       messages: [
-        { role: "system", content: AIHELP_SYSTEM },
+        { role: "system", content: system },
         { role: "user", content: question },
       ],
     }),
@@ -245,6 +303,32 @@ async function openrouterChatOnce(model, question) {
   const t = (d.choices?.[0]?.message?.content || "").trim();
   if (!t) throw new Error(`openrouter ${model} empty reply`);
   return t;
+}
+
+// Generic chat with the SAME full redundancy as #ai-help (rotate every live Ollama
+// model, then every OpenRouter model) but with a caller-supplied system prompt — used
+// by the #issues parser. Returns the first good reply; throws only if ALL providers
+// failed. Low temperature + small token budget for a crisp structured reply.
+async function chatRotating(system, question, { maxTokens = 500, temperature = 0 } = {}) {
+  const q = String(question).slice(0, 2000);
+  const errs = [];
+  for (const model of OLLAMA_CHAT_MODELS) {
+    try {
+      return await ollamaChatOnce(model, q, system, maxTokens, temperature);
+    } catch (e) {
+      errs.push(String(e.message).slice(0, 60));
+    }
+  }
+  if (OPENROUTER_API_KEY) {
+    for (const model of OPENROUTER_CHAT_MODELS) {
+      try {
+        return await openrouterChatOnce(model, q, system, maxTokens, temperature);
+      } catch (e) {
+        errs.push(String(e.message).slice(0, 60));
+      }
+    }
+  }
+  throw new Error(`all chat providers failed — ${errs.join(" | ")}`);
 }
 
 // #ai-help chat with FULL redundancy: rotate every live Ollama model, then every
@@ -442,6 +526,14 @@ function loadState() {
     // The key is already minted and reserved for them; we retry delivery the moment we
     // see them again, so a privacy setting can never cost someone their key.
     pendingDelivery: s.pendingDelivery || {},
+    // channelName -> resolved channel id, for auto-created #releases / #issues so we
+    // create them at most once and remember them across restarts.
+    channels: s.channels || {},
+    // The last release version announced to #releases (dedup — one post per release).
+    lastAnnouncedRelease: s.lastAnnouncedRelease || "",
+    // messageId -> { number, at } for #issues messages already turned into a GitHub
+    // ticket (dedup so a re-processed backlog never files the same issue twice).
+    issues: s.issues || {},
   };
 }
 function saveState(s) {
@@ -805,22 +897,67 @@ async function confirmBanImage(base64) {
   }
 }
 
-// Remove (ban) a member for 100%-confirmed spam, purging their last hour of messages.
-// Needs the "Ban Members" permission; on failure it logs loudly + audits (never crashes).
+// Appeal DM sent to a member the moment BEFORE they're banned. It MUST go out first:
+// once banned they no longer share the server, so the bot can't DM them afterwards.
+function banAppealMessage(reason) {
+  return [
+    "You've been removed (banned) from the **GameLoop Optimization by Jeral Gaming** Discord because our auto-moderation flagged your posts as repeated spam / off-topic content.",
+    "",
+    `Reason: ${reason}`,
+    "",
+    "**Think this was a mistake? You can appeal.** Message the owner **umarabdullahmansoori** directly here — https://discord.com/users/524878568845737985 — explain what happened, and he'll review it and can reinstate you.",
+    "",
+    "Sorry for the trouble if this was an error. 🎮",
+  ].join("\n");
+}
+
+// Public #general notice that a member was banned for spam — so the community sees
+// moderation is active. Never pings; best-effort.
+async function announceBanInGeneral(tag, appealDelivered) {
+  try {
+    const ch = await client.channels.fetch(CH.general);
+    if (!ch?.send) return;
+    await ch.send({
+      content:
+        `🚫 **${tag}** was banned for repeated spam / off-topic posting, and their recent messages were removed.` +
+        (appealDelivered ? " They've been DM'd how to appeal." : ""),
+      allowedMentions: { parse: [] },
+    });
+    log(`  📢 posted ban notice for ${tag} in #general`);
+  } catch (e) {
+    log(`  ⚠ #general ban-notice failed: ${e.message}`);
+  }
+}
+
+// Remove (ban) a REAL repeat spammer. The owner's spec: ban + delete ALL their messages
+// from the last 7 DAYS across EVERY channel + DM them how to appeal + announce the ban
+// in #general. We DM the appeal FIRST (after the ban we can't reach them), then ban with
+// a 7-day message-purge window (Discord deletes their messages guild-wide), then post the
+// #general notice. Needs "Ban Members"; on failure it logs loudly + audits (never crashes).
 // Every ban is mirrored to the grant-log so the owner sees it and can reverse it.
 async function banSpammer(msg, reason) {
+  const tag = msg.author.tag;
+  const uid = msg.author.id;
+  // 1) Appeal DM first (best-effort — their DMs may be closed).
+  const appealDelivered = await safeDM(uid, banAppealMessage(reason));
   try {
     if (!msg.guild) throw new Error("no guild");
-    await msg.guild.members.ban(msg.author.id, {
-      reason: `Auto-removed: 100%-confirmed spam — ${reason}`,
-      deleteMessageSeconds: 3600,
+    // 2) Ban + purge the last 7 days (604800 s) of their messages across ALL channels.
+    await msg.guild.members.ban(uid, {
+      reason: `Auto-removed: 100%-confirmed repeat spam — ${reason}`,
+      deleteMessageSeconds: 604800,
     });
-    log(`  ⛔ removed (banned) ${msg.author.tag} — 100% spam: ${reason}`);
-    await logToChannel(`⛔ **${msg.author.tag}** — REMOVED (banned) for 100%-confirmed spam: ${reason}`);
+    log(`  ⛔ banned ${tag} + purged 7 days of messages (all channels) — repeat spam: ${reason}`);
+    await logToChannel(
+      `⛔ **${tag}** — BANNED + 7-day message purge (all channels) for repeat spam: ${reason}` +
+        (appealDelivered ? " · appeal DM sent" : " · ⚠ appeal DM undeliverable (DMs closed)")
+    );
+    // 3) Public #general notice.
+    await announceBanInGeneral(tag, appealDelivered);
   } catch (e) {
     log(`  ⚠ ban failed (missing "Ban Members"?): ${e.message}`);
     await logToChannel(
-      `⚠️ **${msg.author.tag}** — 100% spam but REMOVE FAILED (${e.message}). Give the bot **Ban Members**. ${msgLink(msg)}`
+      `⚠️ **${tag}** — repeat spam but BAN FAILED (${e.message}). Give the bot **Ban Members**. ${msgLink(msg)}`
     );
   }
 }
@@ -830,20 +967,23 @@ async function banSpammer(msg, reason) {
 // deletes only at >= SPAM_THRESHOLD; bans only when a SECOND strict check is 100%
 // certain. Anything else (normal image, uncertain, provider down) is left alone, and
 // no reply is ever posted (unlike #get-key), so #general stays clean.
-async function moderateGeneralImage(msg, base64) {
+async function moderateGeneralImage(msg, base64, verdict) {
   if (!GENERAL_MODERATION) return;
   if (!OLLAMA_CLOUD_API_KEY) {
     log("  (general) spam check skipped — OLLAMA_CLOUD_API_KEY not set");
     return;
   }
-  let verdict;
-  try {
-    verdict = await classifyGeneralImage(base64);
-  } catch (e) {
-    log(`  (general) spam check unavailable (${e.message}) — leaving message`);
-    return;
+  // Reuse a verdict computed by handleGeneralImage when available (avoids a 2nd
+  // classify call); classify here only when called without one.
+  if (!verdict) {
+    try {
+      verdict = await classifyGeneralImage(base64);
+    } catch (e) {
+      log(`  (general) spam check unavailable (${e.message}) — leaving message`);
+      return;
+    }
+    log(`  (general) classify=${verdict.category} conf=${verdict.spam_confidence} — ${verdict.reason}`);
   }
-  log(`  (general) classify=${verdict.category} conf=${verdict.spam_confidence} — ${verdict.reason}`);
   if (!(verdict.category === "spam" && verdict.spam_confidence >= SPAM_THRESHOLD)) return;
 
   // A single off-topic image is only ever DELETED — never a ban (could be a one-off).
@@ -875,6 +1015,69 @@ async function moderateGeneralImage(msg, base64) {
   } else {
     log(`  (general) ban NOT confirmed (ban=${confirm.ban} certain=${confirm.certain}) — deleted only`);
   }
+}
+
+// #general gate. Images here are MIXED, so we CLASSIFY FIRST (subscription / spam /
+// other) and act on the category, instead of running the lenient grant-vision on
+// everything (which was handing keys to normal, non-proof images — the reported
+// "gave a key to a normal user query" bug). Only a classifier-confirmed subscription
+// proceeds to the grant endpoint, and a key is minted ONLY when the endpoint ALSO
+// validates it — two independent checks must agree. Spam is moderated; a normal
+// ("other") image is left completely alone (no grant, no delete, no reply).
+async function handleGeneralImage(msg, att, image, username, dmUserId) {
+  if (!OLLAMA_CLOUD_API_KEY) {
+    // No classifier → we can't safely tell a proof from a normal image, so we must NOT
+    // fall back to the lenient grant path in #general (that's what caused false keys).
+    log("  (general) classifier unavailable (no OLLAMA_CLOUD_API_KEY) — leaving message");
+    return;
+  }
+  let verdict;
+  try {
+    verdict = await classifyGeneralImage(image.base64);
+  } catch (e) {
+    // Provider down → fail SAFE: never grant, never delete.
+    log(`  (general) classify unavailable (${e.message}) — leaving message`);
+    return;
+  }
+  log(`  (general) classify=${verdict.category} conf=${verdict.spam_confidence} — ${verdict.reason}`);
+
+  // ── Subscription proof → confirm with the grant endpoint, then mint. ──────────
+  if (verdict.category === "subscription") {
+    state.processed[msg.id] = { at: Date.now() };
+    saveState(state);
+    if (DRY_RUN) {
+      log("  ✓ WOULD grant (general: classifier=subscription)");
+      return;
+    }
+    let result;
+    try {
+      const grantBody =
+        image.base64.length > 3_000_000
+          ? { username, imageUrl: att.url }
+          : { username, imageBase64: image.base64, mimeType: image.mime };
+      result = await callGrant(grantBody);
+    } catch (e) {
+      log(`  ! (general) grant network error: ${e.message} — leaving message`);
+      return;
+    }
+    const { ok, data } = result;
+    if (!ok || data.error || !data.valid) {
+      // The classifier thought it was a proof but the endpoint's own vision + 2-provider
+      // consensus disagreed. Do NOT grant (the whole point of the double gate) and do
+      // NOT delete (it looked like a proof, not spam) — just leave it for a human.
+      log(`  (general) subscription NOT confirmed by endpoint (${data?.reason || `ok=${ok}`}) — no grant`);
+      return;
+    }
+    const sent = await deliverKey(msg, dmUserId, data, false, `general:${data.provider || "?"}`);
+    state.granted[username] = { key: data.key, msgId: msg.id, dmUserId, sent, at: Date.now() };
+    saveState(state);
+    return;
+  }
+
+  // ── Not a proof → spam moderation (delete / repeat-offender ban) or leave alone. ──
+  state.processed[msg.id] = { at: Date.now() };
+  saveState(state);
+  await moderateGeneralImage(msg, image.base64, verdict);
 }
 
 // Core handler for one image-bearing message.
@@ -909,6 +1112,16 @@ async function handle(msg, kind) {
     return;
   }
 
+  // #general is MIXED (subscription proofs + spam + normal gaming chat), so it must NOT
+  // run the lenient grant-vision first — that alone was minting keys for ordinary images
+  // (the "gave a key to a normal user query" bug). handleGeneralImage classifies FIRST
+  // and only grants when the classifier AND the endpoint independently agree it's a
+  // subscription proof; everything else is spam-moderated or left untouched.
+  if (isGeneral) {
+    await handleGeneralImage(msg, att, image, username, dmUserId);
+    return;
+  }
+
   let result;
   try {
     // Big images blow past the grant endpoint's request-body limit (Vercel ~4.5MB) → a
@@ -931,15 +1144,6 @@ async function handle(msg, kind) {
   // for manual and leave UNPROCESSED so a transient outage self-heals on restart.
   if (!ok || data.error) {
     log(`  cloud vision error ${status}: ${String(data.error || "").slice(0, 90)}`);
-    // #general: the grant endpoint failed (often a 413 — image too big for its body
-    // limit — or a vision outage). Don't post a reply, but STILL run the LOCAL spam
-    // classifier (Ollama Cloud direct, which takes the full image) so big spam images
-    // are still moderated. moderateGeneralImage fails safe on its own.
-    if (isGeneral) {
-      log("  (general) endpoint vision unavailable — running local spam check");
-      await moderateGeneralImage(msg, image.base64);
-      return;
-    }
     if (OLLAMA_ENABLED && !DRY_RUN) {
       const handled = await tryOllamaFallback(msg, username, dmUserId, isTest, image.base64);
       if (handled) return;
@@ -959,12 +1163,7 @@ async function handle(msg, kind) {
   if (!data.valid) {
     log(`  ⚠ not verified (${data.provider || "?"}: ${data.reason})`);
     // #get-key/#bot-test: every image is a claimed proof, so a non-match is flagged
-    // for a human. #general: images are mixed, so instead check if it's abusive spam
-    // (and stay silent otherwise — no wrong "manual review" reply on normal chat).
-    if (isGeneral) {
-      await moderateGeneralImage(msg, image.base64);
-      return;
-    }
+    // for a human.
     await flagManual(msg, `not verified: ${data.reason}`);
     return;
   }
@@ -1060,11 +1259,261 @@ async function checkAiHelpModels() {
   }
 }
 
+// ---- channel provisioning -------------------------------------------------
+// Resolve a target channel by env id → cached id → by NAME in the guild, creating it if
+// missing (needs Manage Channels). Cached in bot-state so we create it at most once and
+// remember it across restarts. Returns the id, or null (the feature then no-ops). Never
+// throws — a missing permission just logs an actionable warning.
+async function ensureChannel(key, envId, name, topic) {
+  if (envId) return envId;
+  const cached = state.channels?.[key];
+  if (cached) {
+    try {
+      const ch = await client.channels.fetch(cached);
+      if (ch) return cached;
+    } catch {
+      // cached id vanished (channel deleted) → re-resolve below
+    }
+  }
+  try {
+    const guild = await client.guilds.fetch(GUILD_ID);
+    const chans = await guild.channels.fetch();
+    const found = [...chans.values()].find(
+      (c) => c && c.name === name && c.type === ChannelType.GuildText
+    );
+    let id = found?.id;
+    if (!id) {
+      const created = await guild.channels.create({
+        name,
+        type: ChannelType.GuildText,
+        topic,
+        reason: "GameLoop bot: auto-provisioned channel",
+      });
+      id = created.id;
+      log(`  ＋ created #${name} (${id})`);
+    }
+    state.channels = state.channels || {};
+    state.channels[key] = id;
+    saveState(state);
+    return id;
+  } catch (e) {
+    log(`  ⚠ ensureChannel #${name} failed (${e.message}) — set ${key.toUpperCase()}_CHANNEL env or give the bot Manage Channels`);
+    return null;
+  }
+}
+async function resolveReleasesChannel() {
+  return ensureChannel(
+    "releases",
+    process.env.RELEASES_CHANNEL || CH.releases,
+    "releases",
+    "📣 Automatic GameLoop Optimizer release notes."
+  );
+}
+async function resolveIssuesChannel() {
+  return ensureChannel(
+    "issues",
+    process.env.ISSUES_CHANNEL || CH.issues,
+    "issues",
+    "🐛💡 Report a bug/problem OR share a suggestion — it's turned into a tracked ticket automatically."
+  );
+}
+let ISSUES_CH_ID = process.env.ISSUES_CHANNEL || CH.issues;
+
+// ---- #releases: fetch the release manifest + announce ----------------------
+async function fetchReleaseManifest() {
+  for (const url of RELEASE_MANIFEST_URLS) {
+    try {
+      const r = await fetch(url, { cache: "no-store", headers: { "Cache-Control": "no-cache" } });
+      if (!r.ok) continue;
+      const j = await r.json();
+      if (j && j.version) return j;
+    } catch {
+      // try the next url
+    }
+  }
+  return null;
+}
+function releaseAnnounceMessage(m) {
+  // The manifest's notes usually already lead with the version (e.g. "v0.4.47\n• …").
+  const notes = String(m.notes || "").trim();
+  const body = notes || "A new version is available — the app auto-updates on next launch.";
+  return [
+    `🚀 **GameLoop Optimizer v${m.version} is out!**`,
+    "",
+    body,
+    "",
+    "It auto-updates on next launch, or grab it at https://www.gameloopoptimizer.com 🎮",
+  ].join("\n");
+}
+async function announceRelease(m) {
+  const chId = await resolveReleasesChannel();
+  if (!chId) {
+    log("  (releases) no #releases channel resolved — skipping announce");
+    return false;
+  }
+  try {
+    const ch = await client.channels.fetch(chId);
+    for (const c of splitForDiscord(releaseAnnounceMessage(m))) {
+      await ch.send({ content: c, allowedMentions: { parse: [] } });
+    }
+    log(`  📣 announced release v${m.version} in #releases`);
+    return true;
+  } catch (e) {
+    log(`  ⚠ release announce failed: ${e.message}`);
+    return false;
+  }
+}
+// Poll the manifest; announce each version exactly once. On the FIRST poll (no baseline)
+// we only RECORD the current version silently, so a fresh deploy never spam-announces
+// whatever release is already live (unless RELEASE_ANNOUNCE_CURRENT=1).
+async function checkReleases() {
+  if (!RELEASE_ANNOUNCE) return;
+  const m = await fetchReleaseManifest();
+  if (!m || !m.version) return;
+  if (state.lastAnnouncedRelease === String(m.version)) return;
+  const firstEver = !state.lastAnnouncedRelease;
+  if (firstEver && !RELEASE_ANNOUNCE_CURRENT) {
+    state.lastAnnouncedRelease = String(m.version);
+    saveState(state);
+    log(`  (releases) baseline set to v${m.version} (no announce on first run)`);
+    return;
+  }
+  const ok = await announceRelease(m);
+  // Advance the baseline only once we've actually posted (or on a first-run-current
+  // announce), so a transient send failure retries next poll instead of losing the release.
+  if (ok || firstEver) {
+    state.lastAnnouncedRelease = String(m.version);
+    saveState(state);
+  }
+}
+
+// ---- #issues: AI-parse a report → open a GitHub ticket ---------------------
+function parseIssueJson(text) {
+  const m = (text || "").match(/\{[\s\S]*\}/);
+  if (!m) return null;
+  try {
+    const j = JSON.parse(m[0]);
+    // Restrict to GitHub's DEFAULT labels so a POST never fails on an unknown label.
+    const ALLOWED = new Set(["bug", "enhancement", "question"]);
+    let labels = Array.isArray(j.labels)
+      ? j.labels.map((x) => String(x).toLowerCase()).filter((x) => ALLOWED.has(x))
+      : [];
+    if (!labels.length) labels = [j.kind === "suggestion" ? "enhancement" : j.kind === "question" ? "question" : "bug"];
+    labels = [...new Set(labels)].slice(0, 3);
+    return {
+      is_issue: Boolean(j.is_issue),
+      title: String(j.title || "").slice(0, 120),
+      body: String(j.body || "").slice(0, 4000),
+      labels,
+      severity: ["low", "medium", "high"].includes(j.severity) ? j.severity : "medium",
+    };
+  } catch {
+    return null;
+  }
+}
+async function createGithubIssue({ title, body, labels }) {
+  const r = await fetch(`https://api.github.com/repos/${GITHUB_ISSUES_REPO}/issues`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${GITHUB_TOKEN}`,
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      "User-Agent": "gameloop-getkey-bot",
+    },
+    body: JSON.stringify({ title, body, labels }),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(`github ${r.status}: ${JSON.stringify(d).slice(0, 140)}`);
+  return d; // { number, html_url, ... }
+}
+async function handleIssue(msg) {
+  if (!ISSUES_MODERATION) return;
+  if (state.issues[msg.id]) return;
+  const text = (msg.content || "").trim();
+  const imgs = [...msg.attachments.values()]
+    .filter((a) => (a.contentType || "").startsWith("image/") || /\.(png|jpe?g|webp|gif)$/i.test(a.name || ""))
+    .map((a) => a.url);
+  const meaningfulText = !!text && text.length >= 12 && !isChatter(text);
+  // Need something to file — ignore pure chatter / too-short with no screenshot.
+  if (!meaningfulText && !imgs.length) return;
+  if (!GITHUB_TOKEN || !GITHUB_ISSUES_REPO) {
+    log("  (issues) GITHUB_TOKEN / GITHUB_ISSUES_REPO not set — cannot file a ticket");
+    return;
+  }
+  // AI-parse the text into a structured issue. Image-only (no real text) → a minimal
+  // ticket instead of calling the model with nothing.
+  let parsed;
+  if (meaningfulText) {
+    let raw;
+    try {
+      raw = await chatRotating(ISSUE_PARSE_PROMPT, text, { maxTokens: 500, temperature: 0 });
+    } catch (e) {
+      log(`  (issues) AI parse failed (${e.message}) — cannot file`);
+      return;
+    }
+    parsed = parseIssueJson(raw);
+    if (!parsed) {
+      log("  (issues) unparseable AI verdict — skipping");
+      return;
+    }
+    if (!parsed.is_issue) {
+      log(`  (issues) not actionable — ignoring: ${text.slice(0, 40)}`);
+      return;
+    }
+  } else {
+    parsed = {
+      is_issue: true,
+      title: `Screenshot report from ${msg.author.username}`.slice(0, 120),
+      body: text || "(no description — see attached screenshot)",
+      labels: ["bug"],
+      severity: "medium",
+    };
+  }
+  const footer =
+    `\n\n---\n_Reported by **${msg.author.tag}** in Discord #issues · ${msgLink(msg)}_` +
+    (imgs.length ? `\n\nAttachments:\n${imgs.map((u) => `- ${u}`).join("\n")}` : "") +
+    `\n\nSeverity (AI): ${parsed.severity}`;
+  let issue;
+  try {
+    issue = await createGithubIssue({ title: parsed.title, body: parsed.body + footer, labels: parsed.labels });
+  } catch (e) {
+    log(`  (issues) github create failed: ${e.message}`);
+    await react(msg, "⚠️");
+    await logToChannel(
+      `⚠️ **${msg.author.tag}** — issue create FAILED (${e.message}). Check GITHUB_TOKEN / GITHUB_ISSUES_REPO. ${msgLink(msg)}`
+    );
+    return;
+  }
+  state.issues[msg.id] = { number: issue.number, at: Date.now() };
+  saveState(state);
+  await react(msg, "🎫");
+  try {
+    await msg.reply(
+      `🎫 Thanks — I've logged this as ticket **#${issue.number}**. You can follow it here: <${issue.html_url}>\nWe'll take a look and follow up if we need more detail. 🎮`
+    );
+  } catch (e) {
+    log(`  (issues) reply failed: ${e.message}`);
+  }
+  log(`  🎫 filed issue #${issue.number} for ${msg.author.tag}: ${parsed.title}`);
+  await logToChannel(`🎫 **${msg.author.tag}** — issue #${issue.number} created: ${parsed.title} · ${issue.html_url}`);
+}
+
 client.once(Events.ClientReady, async (c) => {
   log(`✅ logged in as ${c.user.tag} · endpoint=${ENDPOINT} · channels=[${[...WATCH.values()].join(", ")}] · dryRun=${DRY_RUN}`);
   await checkAiHelpModels();
+  // Provision #issues + #releases (auto-create if missing + permitted), then wire them.
+  ISSUES_CH_ID = await resolveIssuesChannel();
+  await resolveReleasesChannel();
+  log(
+    `channels: issues=${ISSUES_CH_ID || "—"} releases=${state.channels?.releases || process.env.RELEASES_CHANNEL || "—"} · github=${GITHUB_ISSUES_REPO}${GITHUB_TOKEN ? "" : " (NO TOKEN — #issues off)"}`
+  );
   await scanBacklog();
-  log("watching for new image posts…");
+  // Release poller: announce new versions in #releases (deduped by version in state).
+  if (RELEASE_ANNOUNCE) {
+    await checkReleases();
+    setInterval(() => checkReleases().catch((e) => log(`release poll error: ${e.message}`)), RELEASE_POLL_MS);
+  }
+  log("watching for new posts…");
 });
 
 client.on(Events.MessageCreate, async (msg) => {
@@ -1075,7 +1524,12 @@ client.on(Events.MessageCreate, async (msg) => {
       await handleAiHelp(msg);
       return;
     }
-    // #get-key / #bot-test image verification.
+    // #issues → AI-parsed GitHub ticket.
+    if (ISSUES_CH_ID && msg.channelId === ISSUES_CH_ID) {
+      await handleIssue(msg);
+      return;
+    }
+    // #get-key / #bot-test / #general image verification.
     const kind = WATCH.get(msg.channelId);
     if (!kind) return;
     if (!imageAttachment(msg)) return;
@@ -1085,21 +1539,46 @@ client.on(Events.MessageCreate, async (msg) => {
   }
 });
 
-// Tiny HTTP health endpoint — lets the bot run on a PaaS free tier (which expects a
-// listening port / health check) and be kept awake by an uptime pinger. Harmless on
-// a VM or local. Set PORT via env (most PaaS inject it).
-require("http")
-  .createServer((req, res) => {
-    res.writeHead(200, { "Content-Type": "text/plain" });
-    res.end("gameloop get-key bot: alive");
-  })
-  .listen(process.env.PORT || 8080, () => log(`health endpoint on :${process.env.PORT || 8080}`));
+// Everything the test harness imports. Guarded so `require("./bot.js")` in a test does
+// NOT open a port or try to log in (only running the file directly does that).
+module.exports = {
+  client,
+  state,
+  saveState,
+  // decision logic under test
+  handle,
+  handleGeneralImage,
+  moderateGeneralImage,
+  banSpammer,
+  deliverKey,
+  handleIssue,
+  checkReleases,
+  // parsers / pure helpers
+  parseVerdict,
+  parseClassify,
+  parseIssueJson,
+  releaseAnnounceMessage,
+  banAppealMessage,
+  isChatter,
+};
 
-if (!TOKEN) {
-  console.error("No bot token. Put it in ./.discord-token or set DISCORD_BOT_TOKEN.");
-  process.exit(1);
+if (require.main === module) {
+  // Tiny HTTP health endpoint — lets the bot run on a PaaS free tier (which expects a
+  // listening port / health check) and be kept awake by an uptime pinger. Harmless on a
+  // VM or local. Set PORT via env (most PaaS inject it).
+  require("http")
+    .createServer((req, res) => {
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      res.end("gameloop get-key bot: alive");
+    })
+    .listen(process.env.PORT || 8080, () => log(`health endpoint on :${process.env.PORT || 8080}`));
+
+  if (!TOKEN) {
+    console.error("No bot token. Put it in ./.discord-token or set DISCORD_BOT_TOKEN.");
+    process.exit(1);
+  }
+  client.login(TOKEN).catch((e) => {
+    console.error("login failed:", e.message);
+    process.exit(1);
+  });
 }
-client.login(TOKEN).catch((e) => {
-  console.error("login failed:", e.message);
-  process.exit(1);
-});
