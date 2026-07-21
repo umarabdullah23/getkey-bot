@@ -161,10 +161,15 @@ const GENERAL_MODERATION = process.env.GENERAL_MODERATION !== "0"; // set 0 to g
 // Set GENERAL_BAN=0 to only ever delete; BAN_AFTER_SPAMS tunes how many strikes = a ban.
 const GENERAL_BAN = process.env.GENERAL_BAN !== "0";
 const BAN_AFTER_SPAMS = Math.max(1, Number(process.env.BAN_AFTER_SPAMS || "3"));
-// Classifier prompt for a #general image. Deliberately CONSERVATIVE about "spam"
-// because a false positive DELETES a real user's message.
+// A #general image the AI reads as a PROBLEM/BUG report → file a GitHub ticket, at >= this
+// confidence. Conservative (a false positive files a junk ticket — recoverable, unlike a delete).
+const ISSUE_THRESHOLD = Number(process.env.ISSUE_THRESHOLD || "0.8");
+// Classifier prompt for a #general image — the UNIFIED triage the owner asked for:
+// categorize as spam / subscription (get-key) / issue / other, and the caller acts
+// respectively. CONSERVATIVE about "spam" (a false positive DELETES a real message) and
+// reasonably strict about "issue" (a false positive files a ticket).
 const SPAM_PROMPT =
-  "You are moderating a SINGLE image posted in the #general chat of the Discord for \"GameLoop Optimization by Jeral Gaming\" — a free tool that boosts PUBG Mobile FPS on the GameLoop emulator. Sort the image into exactly ONE category and return ONLY compact JSON, no markdown: {\"category\": \"subscription\"|\"spam\"|\"other\", \"spam_confidence\": 0.0-1.0, \"reason\": \"<=12 words\"}\n\nCategories:\n- \"subscription\" = plausibly a proof of subscribing to the \"Jeral Gaming\" YouTube channel (handle @jeralgaming853 / \"JeralGaming\"): a YouTube channel page, or a subscribe button/dropdown, in ANY language, showing the SUBSCRIBED state (a muted/grey button usually with a BELL icon and/or a dropdown chevron, e.g. English \"Subscribed\", Arabic \"تم الاشتراك\", Russian \"Вы подписаны\", Hindi \"सदस्यता ली\", Spanish \"Suscrito\", Indonesian \"Berlangganan\", etc.), or this channel shown in a Subscriptions list. If the image looks like a YouTube subscribe proof, choose this.\n- \"other\" = a normal, on-topic image: PUBG / GameLoop gameplay clips or screenshots, FPS counters, in-game or emulator settings, error/bug screenshots, the optimizer app UI, or anything gaming-related that is NOT a subscription proof. Use this for anything ambiguous, low-quality, or gaming-adjacent.\n- \"spam\" = CLEARLY off-topic abuse with NO relation to PUBG / GameLoop / gaming / the channel: memes, celebrity or influencer pictures (e.g. MrBeast), advertisements, promotions for other products, or unrelated images posted to flood the channel.\n\nRules:\n- Be CONSERVATIVE about \"spam\": it will be DELETED, so false positives are costly. Set spam_confidence >= 0.9 ONLY when the image is unmistakably off-topic abuse. If you are unsure between \"spam\" and \"other\", choose \"other\" with a LOW spam_confidence.\n- A real subscription proof must NEVER be labeled \"spam\".\n- If the image is blank, unreadable, or has no discernible content, use \"other\" (never \"subscription\").\n- For \"subscription\" or \"other\", set spam_confidence low (typically <= 0.2).\n\nRespond with ONLY the compact JSON described above.";
+  "You are triaging a SINGLE image posted in the #general chat of the Discord for \"GameLoop Optimization by Jeral Gaming\" — a free tool that boosts PUBG Mobile FPS on the GameLoop emulator. Sort the image into exactly ONE category and return ONLY compact JSON, no markdown: {\"category\": \"subscription\"|\"spam\"|\"issue\"|\"other\", \"spam_confidence\": 0.0-1.0, \"issue_confidence\": 0.0-1.0, \"reason\": \"<=12 words\"}\n\nCategories:\n- \"subscription\" = plausibly a proof of subscribing to the \"Jeral Gaming\" YouTube channel (handle @jeralgaming853 / \"JeralGaming\"): a YouTube channel page, or a subscribe button/dropdown, in ANY language, showing the SUBSCRIBED state (a muted/grey button usually with a BELL icon and/or a dropdown chevron, e.g. English \"Subscribed\", Arabic \"تم الاشتراك\", Russian \"Вы подписаны\", Hindi \"सदस्यता ली\", Spanish \"Suscrito\", Indonesian \"Berlangganan\", etc.), or this channel shown in a Subscriptions list. If the image looks like a YouTube subscribe proof, choose this.\n- \"issue\" = the user is REPORTING A PROBLEM / BUG with the app, GameLoop, PUBG, or Windows: an error or crash dialog, a stuck/black screen, a Task Manager or settings screenshot posted to ask 'what is this / why did this happen / this broke after a tweak', something behaving unexpectedly, or any screenshot clearly meant as a bug report or a help request about something not working. Set issue_confidence >= 0.8 ONLY when it is clearly a problem/bug report.\n- \"other\" = a normal, on-topic image with NO problem: PUBG / GameLoop gameplay clips or screenshots, FPS counters, showing off settings or scores, the optimizer app UI when nothing is wrong. Use this for anything ambiguous, low-quality, or gaming-adjacent that is not a clear problem report.\n- \"spam\" = CLEARLY off-topic abuse with NO relation to PUBG / GameLoop / gaming / the channel: memes, celebrity or influencer pictures (e.g. MrBeast), advertisements, promotions for other products, or unrelated images posted to flood the channel.\n\nRules:\n- Be CONSERVATIVE about \"spam\": it will be DELETED, so false positives are costly. Set spam_confidence >= 0.9 ONLY when the image is unmistakably off-topic abuse. If unsure between \"spam\" and anything else, choose the other and set spam_confidence LOW.\n- A real subscription proof must NEVER be labeled \"spam\" or \"issue\".\n- Distinguish \"issue\" (something is wrong / a question about a problem) from \"other\" (normal gameplay/showcase). If it is just a normal game/settings image with no problem, use \"other\".\n- If the image is blank, unreadable, or has no discernible content, use \"other\".\n- Set the confidence for the non-chosen categories LOW (an \"issue\" image should have spam_confidence <= 0.2; a \"spam\" image should have issue_confidence <= 0.2).\n\nRespond with ONLY the compact JSON described above.";
 
 // Second, INDEPENDENT gate before removing (banning) a member. Deliberately biased hard
 // toward NOT banning — it only says yes when the image is unmistakable off-topic abuse
@@ -820,17 +825,23 @@ async function retryPendingDelivery(msg, dmUserId) {
 // Parse the classifier's JSON verdict. Fails SAFE — anything unparseable becomes
 // "other" with 0 confidence, so an odd reply never triggers a deletion.
 function parseClassify(text) {
+  const clamp01 = (v) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : 0;
+  };
   const m = (text || "").match(/\{[\s\S]*\}/);
-  if (!m) return { category: "other", spam_confidence: 0, reason: "no verdict" };
+  if (!m) return { category: "other", spam_confidence: 0, issue_confidence: 0, reason: "no verdict" };
   try {
     const j = JSON.parse(m[0]);
-    const category = ["subscription", "spam", "other"].includes(j.category) ? j.category : "other";
-    let conf = Number(j.spam_confidence);
-    if (!Number.isFinite(conf)) conf = 0;
-    conf = Math.max(0, Math.min(1, conf));
-    return { category, spam_confidence: conf, reason: String(j.reason || "").slice(0, 80) };
+    const category = ["subscription", "spam", "issue", "other"].includes(j.category) ? j.category : "other";
+    return {
+      category,
+      spam_confidence: clamp01(j.spam_confidence),
+      issue_confidence: clamp01(j.issue_confidence),
+      reason: String(j.reason || "").slice(0, 80),
+    };
   } catch {
-    return { category: "other", spam_confidence: 0, reason: "unparseable verdict" };
+    return { category: "other", spam_confidence: 0, issue_confidence: 0, reason: "unparseable verdict" };
   }
 }
 
@@ -1074,7 +1085,23 @@ async function handleGeneralImage(msg, att, image, username, dmUserId) {
     return;
   }
 
-  // ── Not a proof → spam moderation (delete / repeat-offender ban) or leave alone. ──
+  // ── Problem/bug report → file a GitHub ticket (unified triage: spam/get-key/issue). ──
+  // Someone posted a screenshot of something broken (like Atif's "explorer 32bit … after a
+  // tweak" Task Manager shot). Route it through the SAME #issues ticket flow so it's tracked,
+  // instead of being mishandled as a key request. handleIssue is a no-op without a GITHUB_TOKEN.
+  if (verdict.category === "issue" && verdict.issue_confidence >= ISSUE_THRESHOLD) {
+    state.processed[msg.id] = { at: Date.now() };
+    saveState(state);
+    if (DRY_RUN) {
+      log("  ✓ WOULD file issue (general: classifier=issue)");
+      return;
+    }
+    log(`  (general) issue report (conf ${verdict.issue_confidence}) — filing a ticket`);
+    await handleIssue(msg);
+    return;
+  }
+
+  // ── Not a proof/issue → spam moderation (delete / repeat-offender ban) or leave alone. ──
   state.processed[msg.id] = { at: Date.now() };
   saveState(state);
   await moderateGeneralImage(msg, image.base64, verdict);
@@ -1313,7 +1340,7 @@ async function resolveIssuesChannel() {
   return ensureChannel(
     "issues",
     process.env.ISSUES_CHANNEL || CH.issues,
-    "issues",
+    "issues-or-suggestions",
     "🐛💡 Report a bug/problem OR share a suggestion — it's turned into a tracked ticket automatically."
   );
 }
