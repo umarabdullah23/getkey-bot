@@ -1645,6 +1645,20 @@ module.exports = {
 };
 
 if (require.main === module) {
+  // ── BREAK-PROOF: never let one bad event take the whole bot down. ─────────────
+  // Every feature already fails-safe on a missing secret (no GITHUB_TOKEN -> #issues
+  // just no-ops; no OLLAMA key -> #ai-help/#general skip; etc.), but an UNHANDLED
+  // promise rejection or exception would still crash the Node process and drop the bot
+  // off Discord (the "nothing works on any channel" outage). These global guards log
+  // the error and KEEP RUNNING instead of exiting. discord.js auto-reconnects on
+  // gateway drops; its 'error'/'shardError' events must be handled or they throw.
+  process.on("unhandledRejection", (e) => log("⚠ unhandledRejection (kept alive):", (e && (e.stack || e.message)) || String(e)));
+  process.on("uncaughtException", (e) => log("⚠ uncaughtException (kept alive):", (e && (e.stack || e.message)) || String(e)));
+  client.on("error", (e) => log("⚠ discord client error (kept alive):", (e && e.message) || String(e)));
+  client.on("shardError", (e) => log("⚠ discord shard error (kept alive):", (e && e.message) || String(e)));
+  client.on("shardDisconnect", (ev, id) => log(`⚠ shard ${id} disconnected (code ${ev && ev.code}) — auto-reconnecting…`));
+  client.on("shardResume", (id) => log(`✓ shard ${id} resumed`));
+
   // Tiny HTTP health endpoint — lets the bot run on a PaaS free tier (which expects a
   // listening port / health check) and be kept awake by an uptime pinger. Harmless on a
   // VM or local. Set PORT via env (most PaaS inject it).
@@ -1659,8 +1673,12 @@ if (require.main === module) {
     console.error("No bot token. Put it in ./.discord-token or set DISCORD_BOT_TOKEN.");
     process.exit(1);
   }
-  client.login(TOKEN).catch((e) => {
-    console.error("login failed:", e.message);
-    process.exit(1);
-  });
+  // Retry login forever instead of exiting — survives a transient Discord/network outage
+  // at boot without needing the PaaS to restart the whole container.
+  const startLogin = () =>
+    client.login(TOKEN).catch((e) => {
+      log(`login failed (${e.message}) — retrying in 15s`);
+      setTimeout(startLogin, 15000);
+    });
+  startLogin();
 }
