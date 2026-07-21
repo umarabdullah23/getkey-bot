@@ -229,6 +229,23 @@ const ISSUE_PARSE_PROMPT =
   "- Keep the title specific and short. Write the body as neutral, structured English (translate if the user wrote another language) but never drop specifics.\n" +
   "- Pick ONE primary label from ONLY these three (they exist in every repo): 'bug' for crashes/errors/wrong behaviour/key/activation problems, 'enhancement' for a suggestion / feature request / idea, 'question' otherwise. A suggestion ALWAYS gets 'enhancement'.";
 
+// ---- every-channel triage (owner: "integrate bot to every channel") -------
+// The bot listens in EVERY channel, not just #get-key/#bot-test/#general. Each special
+// channel keeps its dedicated flow (#ai-help support, #issues-or-suggestions tickets,
+// #get-key/#bot-test proof flow, #releases untouched); ANY other channel gets the SAME
+// conservative #general triage — an image is AI-classified (spam / subscription / issue /
+// other) and acted on, and a TEXT bug/suggestion becomes a ticket. Toggle/scoping:
+const TRIAGE_ALL_CHANNELS = process.env.TRIAGE_ALL_CHANNELS !== "0"; // off ⇒ only #general triages (old behaviour)
+const GENERAL_ISSUE_TEXT = process.env.GENERAL_ISSUE_TEXT !== "0"; // text bug/suggestion in general/other → ticket
+const TRIAGE_DENY = new Set(
+  (process.env.TRIAGE_DENY || "").split(",").map((s) => s.trim()).filter(Boolean)
+); // channel ids to NEVER triage (e.g. #rules, #announcements)
+// A cheap pre-gate so we don't AI-parse EVERY casual line in every channel: only text that
+// carries a bug/problem OR a suggestion/idea signal is sent to the model (which then makes
+// the final is_issue call). Kept broad on purpose — favour recall, the model filters precision.
+const ACTIONABLE_RE =
+  /\b(bug|issue|problem|error|crash(?:es|ed)?|broke(?:n)?|doesn'?t\s+work|not\s+work(?:ing)?|isn'?t\s+work\w*|fail(?:s|ed|ing)?|freeze|frozen|stuck|lag(?:gy|s)?|glitch|wrong|can'?t|cannot|unable|won'?t\s+\w+|suggest(?:ion)?|feature|improve(?:ment)?|better|missing|enhance|fix|would\s+be\s+(?:nice|great|good|better|cool)|wish\s+(?:it|there|you|the)|please\s+add|can\s+you\s+add|should\s+(?:add|have|be)|needs?\s+(?:to|a))\b/i;
+
 let AIHELP_KNOWLEDGE = "";
 try {
   AIHELP_KNOWLEDGE = fs.readFileSync(path.join(__dirname, "ai-help-knowledge.md"), "utf8");
@@ -1062,10 +1079,12 @@ async function handleGeneralImage(msg, att, image, username, dmUserId) {
     }
     let result;
     try {
+      // excludeGemini: the endpoint verifies this #general proof with the FREE providers
+      // (OpenRouter / Ollama) only — Gemini's limited quota is reserved for #get-key.
       const grantBody =
         image.base64.length > 3_000_000
-          ? { username, imageUrl: att.url }
-          : { username, imageBase64: image.base64, mimeType: image.mime };
+          ? { username, imageUrl: att.url, excludeGemini: true }
+          : { username, imageBase64: image.base64, mimeType: image.mime, excludeGemini: true };
       result = await callGrant(grantBody);
     } catch (e) {
       log(`  ! (general) grant network error: ${e.message} — leaving message`);
@@ -1453,7 +1472,7 @@ async function createGithubIssue({ title, body, labels }) {
   if (!r.ok) throw new Error(`github ${r.status}: ${JSON.stringify(d).slice(0, 140)}`);
   return d; // { number, html_url, ... }
 }
-async function handleIssue(msg) {
+async function handleIssue(msg, opts = {}) {
   if (!ISSUES_MODERATION) return;
   if (state.issues[msg.id]) return;
   const text = (msg.content || "").trim();
@@ -1463,6 +1482,14 @@ async function handleIssue(msg) {
   const meaningfulText = !!text && text.length >= 12 && !isChatter(text);
   // Need something to file — ignore pure chatter / too-short with no screenshot.
   if (!meaningfulText && !imgs.length) return;
+  // fromTriage = called from the generic every-channel triage (NOT the dedicated
+  // #issues-or-suggestions channel). There, require an actionable bug/suggestion SIGNAL
+  // before spending an AI parse — so ordinary chat in #general/#showcase/etc. never gets
+  // AI-parsed or filed. The dedicated #issues channel skips this (every post is meant to
+  // be an issue; the model's is_issue is the only gate).
+  if (opts.fromTriage && !imgs.length && !ACTIONABLE_RE.test(text)) {
+    return;
+  }
   if (!GITHUB_TOKEN || !GITHUB_ISSUES_REPO) {
     log("  (issues) GITHUB_TOKEN / GITHUB_ISSUES_REPO not set — cannot file a ticket");
     return;
@@ -1496,8 +1523,9 @@ async function handleIssue(msg) {
       severity: "medium",
     };
   }
+  const chLabel = msg.channel && msg.channel.name ? `#${msg.channel.name}` : "#issues-or-suggestions";
   const footer =
-    `\n\n---\n_Reported by **${msg.author.tag}** in Discord #issues · ${msgLink(msg)}_` +
+    `\n\n---\n_Reported by **${msg.author.tag}** in Discord ${chLabel} · ${msgLink(msg)}_` +
     (imgs.length ? `\n\nAttachments:\n${imgs.map((u) => `- ${u}`).join("\n")}` : "") +
     `\n\nSeverity (AI): ${parsed.severity}`;
   let issue;
@@ -1543,24 +1571,51 @@ client.once(Events.ClientReady, async (c) => {
   log("watching for new posts…");
 });
 
+// Resolve the id of the #releases channel (baked/env/auto-created) — we NEVER triage it
+// (it carries the bot's own release announcements).
+function releasesChannelId() {
+  return state.channels?.releases || process.env.RELEASES_CHANNEL || CH.releases;
+}
+
 client.on(Events.MessageCreate, async (msg) => {
   try {
     if (msg.author.bot) return;
-    // #ai-help AI support agent (text questions, its own channel).
-    if (msg.channelId === AIHELP_CHANNEL) {
+    const cid = msg.channelId;
+
+    // ── 1) Dedicated per-channel flows (unchanged). ───────────────────────────
+    // #ai-help — AI support agent (text questions).
+    if (cid === AIHELP_CHANNEL) {
       await handleAiHelp(msg);
       return;
     }
-    // #issues → AI-parsed GitHub ticket.
-    if (ISSUES_CH_ID && msg.channelId === ISSUES_CH_ID) {
+    // #issues-or-suggestions — every post AI-parsed into a GitHub ticket.
+    if (ISSUES_CH_ID && cid === ISSUES_CH_ID) {
       await handleIssue(msg);
       return;
     }
-    // #get-key / #bot-test / #general image verification.
-    const kind = WATCH.get(msg.channelId);
-    if (!kind) return;
-    if (!imageAttachment(msg)) return;
-    await handle(msg, kind);
+    // #releases — the bot's own announcements; never triage.
+    if (cid === releasesChannelId()) return;
+    // #get-key / #bot-test — the dedicated subscription-proof flow (every image is a
+    // claimed proof; Gemini-first verification). Text there is ignored.
+    const kind = WATCH.get(cid);
+    if (kind === "getkey" || kind === "bottest") {
+      if (imageAttachment(msg)) await handle(msg, kind);
+      return;
+    }
+
+    // ── 2) EVERY OTHER channel (incl. #general) → unified conservative triage. ──
+    // Owner: "integrate bot to every channel". Same behaviour as #general everywhere:
+    // an image is AI-classified (spam → delete/ban · subscription → grant via the
+    // free-provider double-gate · issue → ticket · other → leave), and a TEXT
+    // bug/suggestion becomes a ticket (signal-gated so casual chat is ignored).
+    // TRIAGE_ALL_CHANNELS=0 restores the old behaviour (only #general triages).
+    if (!TRIAGE_ALL_CHANNELS && kind !== "general") return;
+    if (TRIAGE_DENY.has(cid)) return;
+    if (imageAttachment(msg)) {
+      await handle(msg, "general"); // classify-first; never the lenient grant path
+    } else if (GENERAL_ISSUE_TEXT) {
+      await handleIssue(msg, { fromTriage: true }); // text bug/suggestion → ticket
+    }
   } catch (e) {
     log("handler error:", e.message);
   }
