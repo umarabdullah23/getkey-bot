@@ -492,6 +492,18 @@ async function handleAiHelp(msg) {
     log("ai-help: OLLAMA_CLOUD_API_KEY not set — cannot answer");
     return;
   }
+  // DEDUP by message id — the #1 cause of "double reply": on a gateway RESUME,
+  // discord.js REPLAYS the messages dispatched during the disconnect, so the same
+  // question fires messageCreate again and we'd answer twice (minutes apart). Mark it
+  // as answered BEFORE doing the work so a replayed/concurrent copy is skipped. (Grants
+  // and #issues already dedup via state.processed / state.issues; #ai-help did not.)
+  state.aihelped = state.aihelped || {};
+  if (state.aihelped[msg.id]) {
+    log(`ai-help: already answered ${msg.id} — skipping duplicate (gateway replay)`);
+    return;
+  }
+  state.aihelped[msg.id] = Date.now();
+  saveState(state);
   log(`ai-help: Q from ${msg.author.tag}: ${question.slice(0, 70)}`);
   // Keep the "typing…" indicator alive for the whole ~10s generation (a single
   // sendTyping only lasts ~10s in Discord, so we re-ping every 8s until the answer
@@ -1571,6 +1583,10 @@ client.once(Events.ClientReady, async (c) => {
   log("watching for new posts…");
 });
 
+// Set true the moment the platform asks us to shut down (deploy/restart). Old instance
+// stops replying immediately so a deploy overlap can't double-reply. (See SIGTERM below.)
+let shuttingDown = false;
+
 // Resolve the id of the #releases channel (baked/env/auto-created) — we NEVER triage it
 // (it carries the bot's own release announcements).
 function releasesChannelId() {
@@ -1579,6 +1595,7 @@ function releasesChannelId() {
 
 client.on(Events.MessageCreate, async (msg) => {
   try {
+    if (shuttingDown) return; // deploy in progress — this old instance must stop replying NOW
     if (msg.author.bot) return;
     const cid = msg.channelId;
 
@@ -1658,6 +1675,20 @@ if (require.main === module) {
   client.on("shardError", (e) => log("⚠ discord shard error (kept alive):", (e && e.message) || String(e)));
   client.on("shardDisconnect", (ev, id) => log(`⚠ shard ${id} disconnected (code ${ev && ev.code}) — auto-reconnecting…`));
   client.on("shardResume", (id) => log(`✓ shard ${id} resumed`));
+
+  // GRACEFUL SHUTDOWN — when the PaaS deploys/restarts it sends SIGTERM to the OLD
+  // container. Stop replying + drop the gateway connection AT ONCE so the old and new
+  // instances never both answer (the "double reply" during a deploy). Then exit so the
+  // platform doesn't leave a zombie process holding a second gateway session.
+  const shutdown = (sig) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    log(`${sig} — shutting down: stop replying + close gateway`);
+    try { client.destroy(); } catch {}
+    setTimeout(() => process.exit(0), 1500);
+  };
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
 
   // Tiny HTTP health endpoint — lets the bot run on a PaaS free tier (which expects a
   // listening port / health check) and be kept awake by an uptime pinger. Harmless on a
