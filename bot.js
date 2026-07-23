@@ -289,7 +289,7 @@ const BUY_REPLY =
 // Latin/romanized buy words only — JS \b word-boundaries don't work on Arabic /
 // Cyrillic / CJK, so those scripts are NOT listed here; they escalate to the AI
 // (which classifies any language). This is the fast, reliable common-case path.
-const BUY_FALLBACK_RE = /\b(buy|buying|purchase|purchasing|paid|premium|price|pricing|cost|how much|pay\s+for|payment|checkout|subscribe\s+to\s+pro|upgrade\s+to\s+pro|pro\s+(?:key|plan|version|subscription)|kitna|kitne|kharid\w*|khareed\w*|acheter|comprar|prezzo|preis)\b/i;
+const BUY_FALLBACK_RE = /\b(buy|buying|purchase|purchasing|paid|premium|price|pricing|cost|how much|pay\s+for|payment|checkout|paypal|easypaisa|jazz\s?cash|credit\s?card|debit\s?card|subscribe\s+to\s+pro|upgrade\s+to\s+pro|pro\s+(?:key|plan|version|subscription)|kitna|kitne|kharid\w*|khareed\w*|acheter|comprar|prezzo|preis)\b/i;
 const BUY_COOLDOWN_MS = Number(process.env.BUY_COOLDOWN_MS || 10 * 60 * 1000); // per-user, anti-spam
 const buyReplied = new Map(); // `${userId}:${channelId}` → last-reply ts
 
