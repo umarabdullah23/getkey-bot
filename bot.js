@@ -253,14 +253,28 @@ const TRIAGE_ALL_CHANNELS = process.env.TRIAGE_ALL_CHANNELS !== "0"; // off ⇒ 
 // so the #buy-key pinned post and the any-channel auto-reply look identical.
 const BUY_WA_NUMBER = "+92 324 4539687";
 const BUY_WA_LINK = "https://wa.me/923244539687";
+// WhatsApp logo (WhatsApp's own CDN — the same asset Discord shows when a wa.me
+// link is posted; stable + proxied by Discord).
+const BUY_WA_LOGO = "https://static.whatsapp.net/rsrc.php/v4/yO/r/rukeqTVNJDY.png";
+// The buy card is a SCAM-PREVENTION tool: the WhatsApp must be unmissable so a
+// user can't be tricked into paying anyone else. So WhatsApp is the HERO —
+// official badge on top, logo thumbnail, giant heading number + link — with
+// pricing/safety underneath (owner: "more visible … more obvious … you know the purpose").
 const BUY_EMBED = {
   color: 0x25d366, // WhatsApp green
-  title: "🛒 Buy GameLoop Optimizer Pro",
-  description: "Official keys are sold **only** on the owner's WhatsApp — nowhere else.",
+  author: { name: "✅ OFFICIAL — the ONLY place to buy a key" },
+  title: "🛒 Buy Pro — tap here to open WhatsApp",
+  url: BUY_WA_LINK, // whole title is a clickable WhatsApp link
+  thumbnail: { url: BUY_WA_LOGO },
+  description:
+    `# 📱 WhatsApp\n` +
+    `## ${BUY_WA_NUMBER}\n` +
+    `### 👉 ${BUY_WA_LINK}\n` +
+    `\n` +
+    `This is the **ONLY** official way to buy — keys are sold **nowhere else**.`,
   fields: [
-    { name: "📱 WhatsApp (only official channel)", value: `**${BUY_WA_NUMBER}**\n${BUY_WA_LINK}` },
     { name: "💰 Pricing", value: "**$1.99** / month  ·  **$5** / 3 months\nFull access, forever." },
-    { name: "⚠️ Stay safe", value: "Never pay through Discord DMs or anyone else, no matter who they claim to be. Purchases made anywhere else are at **your own risk** — we can't verify, help, or refund them." },
+    { name: "⚠️ Do NOT get scammed", value: "Never pay through Discord DMs or anyone else, no matter who they claim to be. Purchases made anywhere else are at **your own risk** — we can't verify, help, or refund them." },
   ],
 };
 // Plain-text fallback (kept for the tests + any context that strips embeds).
