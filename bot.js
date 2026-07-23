@@ -1913,6 +1913,25 @@ if (require.main === module) {
     })
     .listen(process.env.PORT || 8080, () => log(`health endpoint on :${process.env.PORT || 8080}`));
 
+  // ── SELF keep-alive (2026-07-23) — the fix for "sometimes no reply at all" ──
+  // Render's FREE web service SUSPENDS after ~15 min with no INBOUND HTTP. While
+  // suspended the process is frozen → the Discord gateway drops → any message sent
+  // during the sleep/cold-start is LOST (Discord doesn't replay it). PROVEN live:
+  // the exact same buy message got no reply when cold, then replied when warm.
+  // Fix: every 10 min (< the 15-min idle window) the bot fetches its OWN public URL.
+  // That outbound request arrives at Render's load balancer as INBOUND traffic and
+  // resets the idle timer, so the service never sleeps — no external pinger needed.
+  // RENDER_EXTERNAL_URL is injected by Render; falls back to the known URL. Disable
+  // with SELF_PING=0 (e.g. on a always-on host). Best-effort: errors are ignored.
+  const SELF_URL =
+    process.env.RENDER_EXTERNAL_URL || process.env.SELF_PING_URL || "https://getkey-bot.onrender.com";
+  if (SELF_URL && process.env.SELF_PING !== "0") {
+    log(`self keep-alive → ${SELF_URL} every 10 min (prevents free-tier spin-down)`);
+    setInterval(() => {
+      fetch(SELF_URL, { method: "GET" }).catch(() => {});
+    }, 10 * 60 * 1000);
+  }
+
   if (!TOKEN) {
     console.error("No bot token. Put it in ./.discord-token or set DISCORD_BOT_TOKEN.");
     process.exit(1);
