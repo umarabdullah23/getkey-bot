@@ -216,6 +216,14 @@ const GITHUB_TOKEN = process.env.GITHUB_TOKEN || "";
 const GITHUB_ISSUES_REPO =
   process.env.GITHUB_ISSUES_REPO || "umarabdullah23/GameLoop-Optimizer-PUBG-Mobile"; // "owner/repo"
 const ISSUES_MODERATION = process.env.ISSUES_MODERATION !== "0";
+// Per-user rate limit on ticket creation. Every-channel triage + #issues can each turn a
+// message into a PUBLIC GitHub issue, so without a cap one user could flood the repo. A
+// user must wait ISSUE_RATE_COOLDOWN_MS between filings AND may file at most
+// ISSUE_RATE_MAX_PER_DAY within ISSUE_RATE_DAY_MS. Applies in the dedicated #issues channel
+// too. Tracked per Discord user id in bot-state (pruned to the 24h window).
+const ISSUE_RATE_COOLDOWN_MS = Math.max(0, Number(process.env.ISSUE_RATE_COOLDOWN_MS || 10 * 60 * 1000)); // 10 min
+const ISSUE_RATE_MAX_PER_DAY = Math.max(1, Number(process.env.ISSUE_RATE_MAX_PER_DAY || 5)); // <=5 / 24h
+const ISSUE_RATE_DAY_MS = Math.max(60_000, Number(process.env.ISSUE_RATE_DAY_MS || 24 * 60 * 60 * 1000)); // 24h
 // Turns a raw #issues message into a structured GitHub issue. The channel takes BOTH
 // bug reports AND suggestions/feature requests. is_issue=false filters out chatter so we
 // never file a ticket for "thanks"/"hi". Labels are restricted to GitHub's DEFAULT set
@@ -257,6 +265,7 @@ const AIHELP_SYSTEM =
   "STYLE: Be genuinely, REALLY helpful — like an expert who wants them to win. Give accurate, specific, actionable guidance: exact settings/values, the steps in the right order, and brief WHY. Use the KNOWLEDGE's specifics when they match the user's PC/problem (e.g. the per-GPU recipe for their card, the exact fix steps for their error) — and if knowing their GPU/CPU would let you give an exact recipe, ask for it. Cover the important points thoroughly but tightly: no filler, no greeting, no restating the question, no pep-talk. Aim for ~700-1400 characters; go longer only when the topic genuinely needs it. Clear markdown: bold key terms, a short header, bullets; light emoji ok.\n\n" +
   "LAYOUT: Compact — single line breaks only. NEVER put blank lines between bullets or sections (no big gaps). Each bullet on its own line, one after another. Do NOT use markdown TABLES (Discord does not render them — they show as ugly raw pipes); use short bullets like 'Setting — value' instead.\n\n" +
   "LINKS: Most answers need NO link at all. Only when it genuinely helps (e.g. they ask where to download or buy) add the website ONCE, at the very END, as a short note, written EXACTLY like this WITH the spaces: https://www. gameloopoptimizer .com/ . Refer to YouTube (Jeral Gaming) and Discord channels (like #get-key) BY NAME instead of pasting raw links. NEVER post the owner's personal Discord link or any discord.com/users link, and never use markdown [text](url) syntax.\n\n" +
+  "BUYING (exact rule — applies whenever the user wants to BUY Pro or asks how/where to pay): keep it SHORT (2-3 lines). The ONLY official way to buy is the owner's WhatsApp: +92 324 4539687 — https://wa.me/923244539687 (this wa.me link is an allowed exception to the LINKS rule — paste it plainly). ALWAYS include this warning, in your own words but unambiguous: never pay any admin, reseller, 'partner', or anyone who DMs you — those are not official, and if you buy from anyone else or get scammed, YOU are responsible; only keys bought via that WhatsApp are guaranteed.\n\n" +
   "PROMOTION (end a real answer with this — EXCEPT on support problems, see the next rule, which OVERRIDES this one): Fully answer and help FIRST, then finish with a separator line of exactly ten dashes '----------' on its OWN line, followed by ONE short, soft promo line about how GameLoop Optimizer ITSELF helps — e.g. it automates/does most of these tweaks for you and a Pro key unlocks the full boost. Keep it to ONE line, soft and honest (never invent feature benefits, e.g. don't call the Save Editor a troubleshooting tool), and VARY the wording naturally. Do NOT put any website link/URL in this promo line (mention the TOOL, not the site). Do NOT push the free 'subscribe on YouTube + #get-key' route unless the user EXPLICITLY asks how to get a free key. Skip the promo line ONLY for a trivial one-line reply. If they ask price, answer plainly (Pro $1.99/mo or $5/3mo). Example ending:\n<your full helpful answer>\n----------\nGameLoop Optimizer automates most of these tweaks for you — a Pro key unlocks the full boost.\n\n" +
   "NO PROMO ON SUPPORT PROBLEMS (this OVERRIDES the PROMOTION rule above): Output NO '----------' separator and NO promo line at all — end on your last helpful sentence — when the user's problem is about GETTING or ACTIVATING a key: key delivery, the subscribe screenshot/verification, their key not working or not arriving, their account, a payment, or a refund. Pitching the product to someone stuck waiting for their key reads as tone-deaf — just solve it and stop. This exception is NARROW: a TECHNICAL question (FPS, lag, stutter, crashes, error codes, black screen, GameLoop/PUBG/Windows settings, hardware) is NOT a key problem — answer it fully and DO end with the separator + promo line as normal.\n\n" +
   "KEY / VERIFICATION QUESTIONS (very common — 'why wasn't my screenshot validated?', 'where is my key?'): answer STRICTLY from the KNOWLEDGE's free-key section, which describes the REAL process. NEVER invent validation requirements. There is NO rule about screenshot age/recency, file type/format, image resolution, re-uploading, Discord caching, or the user's YouTube profile being public — do not list any of those as reasons. The subscribed button is GREY (never green), and #general works as well as #get-key. The single most common real cause is that the user's Discord DMs are closed so the key can't be delivered — lead with that, and tell them their key is reserved and arrives automatically once DMs are open (no re-verification needed).\n\n" +
@@ -578,6 +587,17 @@ const state = loadState();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (...m) => console.log(new Date().toISOString().slice(11, 19), ...m);
 
+// Mask a license key for AUDIT/console output only — shows the first 4 + last 4 chars
+// (e.g. "SUB-…V9LJ"). The user still gets the FULL real key in their DM/thread; only the
+// copies written to the grant-log channel + stdout are masked, so a leaked log / a mod
+// scrolling the audit feed can never lift a working key. The real key stays intact in the
+// DM path and in state.pendingDelivery (needed for re-delivery).
+function maskKey(k) {
+  const s = String(k == null ? "" : k);
+  if (s.length <= 8) return s; // too short to meaningfully mask (never a real key)
+  return `${s.slice(0, 4)}…${s.slice(-4)}`;
+}
+
 // ---- messages -------------------------------------------------------------
 // Support line appended to every key DM — points users to the owner/developer.
 const SUPPORT_LINE =
@@ -760,9 +780,9 @@ async function deliverKey(msg, dmUserId, keyData, isTest, via) {
     } catch (e) {
       log(`  reply failed: ${e.message}`);
     }
-    log(`  ✓ ${keyData.key} ${keyData.existing ? "(existing)" : "(new)"} via ${via} → DM sent`);
+    log(`  ✓ ${maskKey(keyData.key)} ${keyData.existing ? "(existing)" : "(new)"} via ${via} → DM sent`);
     await logToChannel(
-      `✅ **${msg.author.tag}** → \`${keyData.key}\`${keyData.existing ? " (re-sent)" : ""} · via ${via} · ${msgLink(msg)}`
+      `✅ **${msg.author.tag}** → \`${maskKey(keyData.key)}\`${keyData.existing ? " (re-sent)" : ""} · via ${via} · ${msgLink(msg)}`
     );
   } else {
     // DMs closed. The user is verified and the key is minted — this is a DELIVERY
@@ -777,9 +797,9 @@ async function deliverKey(msg, dmUserId, keyData, isTest, via) {
       delete state.pendingDelivery[dmUserId];
       saveState(state);
       await react(msg, "✅");
-      log(`  ✓ ${keyData.key} via private thread (DMs closed)`);
+      log(`  ✓ ${maskKey(keyData.key)} via private thread (DMs closed)`);
       await logToChannel(
-        `✅ **${msg.author.tag}** → \`${keyData.key}\` · DMs closed → delivered in a **private thread** · via ${via} · ${msgLink(msg)}`
+        `✅ **${msg.author.tag}** → \`${maskKey(keyData.key)}\` · DMs closed → delivered in a **private thread** · via ${via} · ${msgLink(msg)}`
       );
       return true;
     }
@@ -791,9 +811,9 @@ async function deliverKey(msg, dmUserId, keyData, isTest, via) {
     } catch (e) {
       log(`  reply failed: ${e.message}`);
     }
-    log(`  ✓ ${keyData.key} but DM blocked + no thread → pending delivery`);
+    log(`  ✓ ${maskKey(keyData.key)} but DM blocked + no thread → pending delivery`);
     await logToChannel(
-      `📪 **${msg.author.tag}** — DMs closed, key \`${keyData.key}\` RESERVED (auto-delivers when they post again) · ${msgLink(msg)}`
+      `📪 **${msg.author.tag}** — DMs closed, key \`${maskKey(keyData.key)}\` RESERVED (auto-delivers when they post again) · ${msgLink(msg)}`
     );
   }
   return sent;
@@ -843,9 +863,9 @@ async function retryPendingDelivery(msg, dmUserId) {
   } catch (e) {
     log(`  reply failed: ${e.message}`);
   }
-  log(`  ✓ pending key ${pending.key} delivered on retry`);
+  log(`  ✓ pending key ${maskKey(pending.key)} delivered on retry`);
   await logToChannel(
-    `✅ **${msg.author.tag}** → \`${pending.key}\` (reserved key delivered once DMs opened) · ${msgLink(msg)}`
+    `✅ **${msg.author.tag}** → \`${maskKey(pending.key)}\` (reserved key delivered once DMs opened) · ${msgLink(msg)}`
   );
   return true;
 }
@@ -1484,6 +1504,46 @@ async function createGithubIssue({ title, body, labels }) {
   if (!r.ok) throw new Error(`github ${r.status}: ${JSON.stringify(d).slice(0, 140)}`);
   return d; // { number, html_url, ... }
 }
+// Per-user issue-creation rate tracker. Stored UNDER state.issues (as the reserved
+// non-snowflake key "__rate__", which can never collide with a message id) so it
+// persists in bot-state AND is cleared alongside the issue dedup map. Shape:
+// { [userId]: [msSinceEpoch, …] } pruned to the last ISSUE_RATE_DAY_MS.
+function issueRateStore() {
+  state.issues = state.issues || {};
+  if (!state.issues.__rate__) state.issues.__rate__ = {};
+  return state.issues.__rate__;
+}
+// Would filing right now exceed a user's limit? Prunes stale timestamps as a side effect.
+// Returns { limited: bool, reason }.
+function issueRateExceeded(userId) {
+  const store = issueRateStore();
+  const now = Date.now();
+  const recent = (store[userId] || []).filter((t) => now - t < ISSUE_RATE_DAY_MS);
+  store[userId] = recent;
+  if (recent.length && now - recent[recent.length - 1] < ISSUE_RATE_COOLDOWN_MS) {
+    return { limited: true, reason: "cooldown" };
+  }
+  if (recent.length >= ISSUE_RATE_MAX_PER_DAY) {
+    return { limited: true, reason: "daily" };
+  }
+  return { limited: false, reason: "" };
+}
+// Record a successful filing + prune the whole store so it can't grow unbounded (drop
+// any user whose timestamps have all aged out of the 24h window).
+function issueRateRecord(userId) {
+  const store = issueRateStore();
+  const now = Date.now();
+  const recent = (store[userId] || []).filter((t) => now - t < ISSUE_RATE_DAY_MS);
+  recent.push(now);
+  store[userId] = recent;
+  for (const uid of Object.keys(store)) {
+    const arr = (store[uid] || []).filter((t) => now - t < ISSUE_RATE_DAY_MS);
+    if (arr.length) store[uid] = arr;
+    else delete store[uid];
+  }
+  saveState(state);
+}
+
 async function handleIssue(msg, opts = {}) {
   if (!ISSUES_MODERATION) return;
   if (state.issues[msg.id]) return;
@@ -1504,6 +1564,23 @@ async function handleIssue(msg, opts = {}) {
   }
   if (!GITHUB_TOKEN || !GITHUB_ISSUES_REPO) {
     log("  (issues) GITHUB_TOKEN / GITHUB_ISSUES_REPO not set — cannot file a ticket");
+    return;
+  }
+  // Rate-limit per Discord user BEFORE spending an AI parse or opening a public issue, so
+  // one person can't flood the repo. Applies everywhere (triage + the dedicated #issues
+  // channel). A refusal replies politely and files nothing.
+  const rl = issueRateExceeded(msg.author.id);
+  if (rl.limited) {
+    log(`  (issues) rate-limited ${msg.author.tag} (${rl.reason}) — not filing`);
+    try {
+      await msg.reply(
+        rl.reason === "cooldown"
+          ? "⏳ Thanks — you just sent a report a moment ago. Please wait a few minutes before sending another so we can keep tickets tidy. 🎮"
+          : "⏳ Thanks — you've filed several reports today already. Please wait a bit before adding more so we can work through them. 🎮"
+      );
+    } catch (e) {
+      log(`  (issues) rate-limit reply failed: ${e.message}`);
+    }
     return;
   }
   // AI-parse the text into a structured issue. Image-only (no real text) → a minimal
@@ -1553,6 +1630,7 @@ async function handleIssue(msg, opts = {}) {
   }
   state.issues[msg.id] = { number: issue.number, at: Date.now() };
   saveState(state);
+  issueRateRecord(msg.author.id); // count this successful filing toward the user's cap
   await react(msg, "🎫");
   try {
     await msg.reply(

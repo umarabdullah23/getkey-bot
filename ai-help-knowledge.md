@@ -30,6 +30,10 @@ license internals). Be accurate, detailed, and genuinely helpful.
 - **Pro — $5 / 3 months** (launch, was $11.99 — ~$1.67/mo, best value).
 - **Pro unlocks (permanently):** the full optimization ladder incl. MAX, hardware-aware tweaks,
   the Save Editor, everything forever.
+- **How to buy — ONLY via the owner's WhatsApp: +92 324 4539687 (https://wa.me/923244539687).**
+  No admin, reseller, "partner", or DM offer is official. If a user pays anyone else and gets
+  scammed, that is their own responsibility — only keys bought through that WhatsApp are
+  guaranteed. Always state this when someone wants to buy.
 
 ═══════════════════════════════════════════════════════════════════════════════
 ## 3) FEATURES & SAFETY (safe to share)
