@@ -282,24 +282,59 @@ const BUY_REPLY =
   `🛒 Buy Pro ONLY via the owner's WhatsApp: ${BUY_WA_NUMBER} — ${BUY_WA_LINK}\n` +
   "💰 $1.99 / month · $5 / 3 months (full access forever)\n" +
   "⚠️ Never pay through Discord DMs or anyone else — purchases made anywhere else are at your own risk (no verify/help/refund).";
-const BUY_RE = /\b(buy|buying|purchase|purchasing|pay(?:ment| for)?|price|pricing|how much|kitna|kitne|kharid\w*|khareed\w*|acheter|comprar|شراء|اشتري|купить|цена|pro (?:key|version|plan)|paid (?:key|version)|premium)\b/i;
+// Buy-intent is decided by AI (below), NOT a keyword list — a fixed array can't
+// cover every phrasing/language (owner: "not a big array, we can't cater all
+// cases"). This tiny regex is ONLY a safety net for when EVERY AI provider is
+// down, so buying still works offline; it is NOT the detector.
+// Latin/romanized buy words only — JS \b word-boundaries don't work on Arabic /
+// Cyrillic / CJK, so those scripts are NOT listed here; they escalate to the AI
+// (which classifies any language). This is the fast, reliable common-case path.
+const BUY_FALLBACK_RE = /\b(buy|buying|purchase|purchasing|paid|premium|price|pricing|cost|how much|pay\s+for|payment|checkout|subscribe\s+to\s+pro|upgrade\s+to\s+pro|pro\s+(?:key|plan|version|subscription)|kitna|kitne|kharid\w*|khareed\w*|acheter|comprar|prezzo|preis)\b/i;
 const BUY_COOLDOWN_MS = Number(process.env.BUY_COOLDOWN_MS || 10 * 60 * 1000); // per-user, anti-spam
-const buyReplied = new Map(); // userId → last-reply ts
-// Returns true when the message was a buy ask and the canned reply was sent (or
-// suppressed by the cooldown) — the caller then skips ticket-triage for it.
+const buyReplied = new Map(); // `${userId}:${channelId}` → last-reply ts
+
+// AI decides whether a message is a BUY / purchase / payment intent — covers any
+// phrasing OR language with no keyword list. Cheap yes/no (rotates Ollama →
+// OpenRouter → Gemini via chatRotating). Falls back to the tiny regex only if
+// every provider fails, so buying never silently breaks.
+const BUY_INTENT_SYSTEM =
+  "You are an intent classifier for a Discord bot for 'GameLoop Optimizer' (a Windows tool with a FREE tier and a PAID 'Pro' tier).\n" +
+  "Reply with ONLY one lowercase word: yes or no. No punctuation, no explanation.\n" +
+  "Answer 'yes' ONLY when the user wants to BUY / purchase / pay for the PAID or Pro version/key/subscription, OR asks its PRICE / how much it costs / how to pay — i.e. they intend to spend money on the paid product. This holds in ANY language.\n" +
+  "Answer 'no' for everything else, including: getting a FREE key, subscribing on YouTube for a free key, technical or game help, bug reports, feature requests, greetings, thanks, or unrelated chat.";
+async function isBuyIntent(txt) {
+  const s = String(txt || "").trim();
+  if (s.length < 3) return false;
+  // Fast, reliable path: clear buy/price wording (multi-language) → yes instantly,
+  // NO AI call. Covers the vast majority and keeps working even if every AI is down.
+  if (BUY_FALLBACK_RE.test(s)) return true;
+  // Escalate ONLY the phrasings keywords miss (e.g. "take my money", "quanto costa")
+  // to the AI — this is what "caters all cases" without a giant keyword list. If the
+  // AI is momentarily unavailable, the keyword path above already handled common buys.
+  try {
+    const a = await chatRotating(BUY_INTENT_SYSTEM, s, { maxTokens: 3, temperature: 0 });
+    return /^\s*yes\b/i.test(String(a)) || /\byes\b/i.test(String(a).slice(0, 12));
+  } catch {
+    return false;
+  }
+}
+
+// Returns true when the message was a buy ask (so the caller skips ticket-triage).
+// Cooldown is per USER *per CHANNEL* so the same person asking in two channels
+// gets an answer in each.
 async function maybeBuyReply(msg) {
   const txt = String(msg.content || "").trim();
-  if (!txt || !BUY_RE.test(txt)) return false;
-  // Cooldown is per USER *per CHANNEL* (not global) so the same person asking in
-  // two different channels gets an answer in each — a global key made it look
-  // "broken in some channels" while it was just the cooldown from another channel.
+  if (txt.length < 3) return false;
+  if (isChatter(txt)) return false;               // cheap: skip greetings/emoji (no AI call)
+  if (!(await isBuyIntent(txt))) return false;     // AI intent decision
   const key = `${msg.author.id}:${msg.channelId}`;
   const last = buyReplied.get(key) || 0;
   if (Date.now() - last > BUY_COOLDOWN_MS) {
     buyReplied.set(key, Date.now());
-    // Embed first; fall back to plain text if embeds are blocked in this channel.
+    // Fixed embed keeps the formatting perfect regardless of AI; plain-text fallback
+    // only if embeds are blocked in this channel.
     await msg.reply({ embeds: [BUY_EMBED] }).catch(() => msg.reply(BUY_REPLY).catch(() => {}));
-    log(`💰 buy-intent reply → ${msg.author.tag} in #${(msg.channel && msg.channel.name) || msg.channelId}`);
+    log(`💰 buy-intent (AI) → ${msg.author.tag} in #${(msg.channel && msg.channel.name) || msg.channelId}`);
   }
   return true;
 }
@@ -1878,9 +1913,10 @@ module.exports = {
   releaseAnnounceMessage,
   banAppealMessage,
   isChatter,
-  // buy-intent canned reply (any channel)
+  // buy-intent (AI-detected) canned reply (any channel)
   maybeBuyReply,
-  BUY_RE,
+  isBuyIntent,
+  BUY_FALLBACK_RE,
   BUY_REPLY,
   BUY_EMBED,
 };
