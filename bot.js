@@ -442,12 +442,17 @@ function tidyAnswer(t) {
     let out;
     if (/discord\.com\/users\//i.test(url)) out = "";                  // safety net (already stripped)
     else if (/gameloopoptimizer\.com/i.test(url)) out = "https://www. gameloopoptimizer .com/"; // owner's spaced form
+    else if (/wa\.me/i.test(url)) out = url;                           // owner's WhatsApp — stays CLICKABLE (2026-07-23)
     else out = url.replace(/^(https?:\/\/)([^\/\s]+)/i, (mm, pre, host) => pre + host.replace(/\./g, " . "));
     return out + trail;
   });
   // Force ANY website variant (however the model spaced/garbled it) to the exact clean form.
   s = s.replace(/(?:https?:\/\/)?(?:w{2,3}[\s.\/]*)?gameloopoptimizer[\s.\/]*com\/?/gi,
     "https://www. gameloopoptimizer .com/");
+  // Force ANY garbled WhatsApp-link variant (model- OR tidy-spaced) back to the exact
+  // clickable link — the owner's buy channel must never render broken (2026-07-23).
+  s = s.replace(/(?:https?:\/\/)?\s*wa[\s.\/\\]*me[\s.\/\\]*923244539687\/?/gi,
+    "https://wa.me/923244539687");
   // Final tidy: kill empty wrappers + collapse blank-line gaps (keep the injected URL spaces).
   s = s
     .replace(/\(\s*\)/g, "")
