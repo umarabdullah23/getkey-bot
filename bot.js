@@ -249,12 +249,25 @@ const TRIAGE_ALL_CHANNELS = process.env.TRIAGE_ALL_CHANNELS !== "0"; // off ⇒ 
 // "make this bot active in any channel … users are dumb, they do anything").
 // Deterministic — no AI involved, so it can never hallucinate or garble the link.
 // #ai-help is excluded (its AI already answers buying with the same info).
+// Rich EMBED (clean card) — plain-text markdown read as messy. One shared shape
+// so the #buy-key pinned post and the any-channel auto-reply look identical.
+const BUY_WA_NUMBER = "+92 324 4539687";
+const BUY_WA_LINK = "https://wa.me/923244539687";
+const BUY_EMBED = {
+  color: 0x25d366, // WhatsApp green
+  title: "🛒 Buy GameLoop Optimizer Pro",
+  description: "Official keys are sold **only** on the owner's WhatsApp — nowhere else.",
+  fields: [
+    { name: "📱 WhatsApp (only official channel)", value: `**${BUY_WA_NUMBER}**\n${BUY_WA_LINK}` },
+    { name: "💰 Pricing", value: "**$1.99** / month  ·  **$5** / 3 months\nFull access, forever." },
+    { name: "⚠️ Stay safe", value: "Never pay through Discord DMs or anyone else, no matter who they claim to be. Purchases made anywhere else are at **your own risk** — we can't verify, help, or refund them." },
+  ],
+};
+// Plain-text fallback (kept for the tests + any context that strips embeds).
 const BUY_REPLY =
-  "🛒 **Buying Pro?** It's sold **ONLY** on the owner's WhatsApp:\n" +
-  "📱 **+92 324 4539687** → https://wa.me/923244539687\n" +
-  "💰 **$1.99** / month  ·  **$5** / 3 months — full access forever\n" +
-  "\n" +
-  "⚠️ **For your safety:** never pay through Discord DMs or anyone else, no matter who they say they are. Purchases made anywhere else are at your own risk — we can't verify, help, or refund them.";
+  `🛒 Buy Pro ONLY via the owner's WhatsApp: ${BUY_WA_NUMBER} — ${BUY_WA_LINK}\n` +
+  "💰 $1.99 / month · $5 / 3 months (full access forever)\n" +
+  "⚠️ Never pay through Discord DMs or anyone else — purchases made anywhere else are at your own risk (no verify/help/refund).";
 const BUY_RE = /\b(buy|buying|purchase|purchasing|pay(?:ment| for)?|price|pricing|how much|kitna|kitne|kharid\w*|khareed\w*|acheter|comprar|شراء|اشتري|купить|цена|pro (?:key|version|plan)|paid (?:key|version)|premium)\b/i;
 const BUY_COOLDOWN_MS = Number(process.env.BUY_COOLDOWN_MS || 10 * 60 * 1000); // per-user, anti-spam
 const buyReplied = new Map(); // userId → last-reply ts
@@ -266,7 +279,8 @@ async function maybeBuyReply(msg) {
   const last = buyReplied.get(msg.author.id) || 0;
   if (Date.now() - last > BUY_COOLDOWN_MS) {
     buyReplied.set(msg.author.id, Date.now());
-    await msg.reply(BUY_REPLY).catch(() => {});
+    // Embed first; fall back to plain text if embeds are blocked in this channel.
+    await msg.reply({ embeds: [BUY_EMBED] }).catch(() => msg.reply(BUY_REPLY).catch(() => {}));
     log(`💰 buy-intent reply → ${msg.author.tag} in #${(msg.channel && msg.channel.name) || msg.channelId}`);
   }
   return true;
@@ -1835,6 +1849,7 @@ module.exports = {
   maybeBuyReply,
   BUY_RE,
   BUY_REPLY,
+  BUY_EMBED,
 };
 
 if (require.main === module) {
