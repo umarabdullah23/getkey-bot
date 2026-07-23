@@ -250,9 +250,11 @@ const TRIAGE_ALL_CHANNELS = process.env.TRIAGE_ALL_CHANNELS !== "0"; // off ⇒ 
 // Deterministic — no AI involved, so it can never hallucinate or garble the link.
 // #ai-help is excluded (its AI already answers buying with the same info).
 const BUY_REPLY =
-  "Buy ONLY via the owner's WhatsApp: +92 324 4539687 — https://wa.me/923244539687\n" +
-  "⚠️ For your safety: official keys are sold ONLY on that WhatsApp — never through Discord DMs or anyone else, no matter who they say they are. Purchases made anywhere else are at your own risk — we can't verify, help, or refund them.\n" +
-  "Pro pricing: $1.99 / month or $5 / 3 months (full access forever).";
+  "🛒 **Buying Pro?** It's sold **ONLY** on the owner's WhatsApp:\n" +
+  "📱 **+92 324 4539687** → https://wa.me/923244539687\n" +
+  "💰 **$1.99** / month  ·  **$5** / 3 months — full access forever\n" +
+  "\n" +
+  "⚠️ **For your safety:** never pay through Discord DMs or anyone else, no matter who they say they are. Purchases made anywhere else are at your own risk — we can't verify, help, or refund them.";
 const BUY_RE = /\b(buy|buying|purchase|purchasing|pay(?:ment| for)?|price|pricing|how much|kitna|kitne|kharid\w*|khareed\w*|acheter|comprar|شراء|اشتري|купить|цена|pro (?:key|version|plan)|paid (?:key|version)|premium)\b/i;
 const BUY_COOLDOWN_MS = Number(process.env.BUY_COOLDOWN_MS || 10 * 60 * 1000); // per-user, anti-spam
 const buyReplied = new Map(); // userId → last-reply ts
