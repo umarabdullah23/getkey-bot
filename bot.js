@@ -290,10 +290,10 @@ const BUY_REPLY =
 // Cyrillic / CJK, so those scripts are NOT listed here; they escalate to the AI
 // (which classifies any language). This is the fast, reliable common-case path.
 const BUY_FALLBACK_RE = /\b(buy|buying|purchase|purchasing|paid|premium|price|pricing|cost|how much|pay\s+for|payment|checkout|paypal|easypaisa|jazz\s?cash|credit\s?card|debit\s?card|subscribe\s+to\s+pro|upgrade\s+to\s+pro|pro\s+(?:key|plan|version|subscription)|kitna|kitne|kharid\w*|khareed\w*|acheter|comprar|prezzo|preis)\b/i;
-// Short per-user-per-channel cooldown: long enough to stop a spam loop, short
-// enough that a confused/noob user who re-asks still gets answered (owner: "users
-// can be noob … even a clue → send it"). 45s default; env-overridable.
-const BUY_COOLDOWN_MS = Number(process.env.BUY_COOLDOWN_MS || 45 * 1000);
+// NO cooldown by default (owner: "no cooldown please") — every buy message gets
+// answered, so a noob who re-asks is never left hanging. Set BUY_COOLDOWN_MS > 0
+// in env if a spam-throttle is ever wanted.
+const BUY_COOLDOWN_MS = Number(process.env.BUY_COOLDOWN_MS || 0);
 const buyReplied = new Map(); // `${userId}:${channelId}` → last-reply ts
 
 // AI decides whether a message is a BUY / purchase / payment intent — covers any
@@ -336,7 +336,7 @@ async function maybeBuyReply(msg) {
   if (!(await isBuyIntent(txt))) return false;     // AI intent decision
   const key = `${msg.author.id}:${msg.channelId}`;
   const last = buyReplied.get(key) || 0;
-  if (Date.now() - last > BUY_COOLDOWN_MS) {
+  if (BUY_COOLDOWN_MS <= 0 || Date.now() - last > BUY_COOLDOWN_MS) {
     buyReplied.set(key, Date.now());
     // Fixed embed keeps the formatting perfect regardless of AI; plain-text fallback
     // only if embeds are blocked in this channel.
