@@ -274,7 +274,7 @@ const BUY_EMBED = {
     `This is the **ONLY** official way to buy — keys are sold **nowhere else**.`,
   fields: [
     { name: "💰 Pricing", value: "**$1.99** / month  ·  **$5** / 3 months\nFull access, forever." },
-    { name: "🚨 DON'T GET SCAMMED 🚨", value: "**NEVER** pay through Discord DMs or anyone else — no matter who they claim to be. Payments made anywhere except that WhatsApp are **100% at your own risk**; we can **NOT** verify, help, or refund them." },
+    { name: "🚨 DON'T GET SCAMMED 🚨", value: "**NEVER** pay through Discord DMs or anyone else — no matter who they claim to be. Payments made anywhere except that **WhatsApp** are 100% at your own risk; we can **NOT** verify, help, or refund them." },
   ],
 };
 // Plain-text fallback (kept for the tests + any context that strips embeds).
