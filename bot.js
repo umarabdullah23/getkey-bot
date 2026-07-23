@@ -290,18 +290,25 @@ const BUY_REPLY =
 // Cyrillic / CJK, so those scripts are NOT listed here; they escalate to the AI
 // (which classifies any language). This is the fast, reliable common-case path.
 const BUY_FALLBACK_RE = /\b(buy|buying|purchase|purchasing|paid|premium|price|pricing|cost|how much|pay\s+for|payment|checkout|paypal|easypaisa|jazz\s?cash|credit\s?card|debit\s?card|subscribe\s+to\s+pro|upgrade\s+to\s+pro|pro\s+(?:key|plan|version|subscription)|kitna|kitne|kharid\w*|khareed\w*|acheter|comprar|prezzo|preis)\b/i;
-const BUY_COOLDOWN_MS = Number(process.env.BUY_COOLDOWN_MS || 10 * 60 * 1000); // per-user, anti-spam
+// Short per-user-per-channel cooldown: long enough to stop a spam loop, short
+// enough that a confused/noob user who re-asks still gets answered (owner: "users
+// can be noob … even a clue → send it"). 45s default; env-overridable.
+const BUY_COOLDOWN_MS = Number(process.env.BUY_COOLDOWN_MS || 45 * 1000);
 const buyReplied = new Map(); // `${userId}:${channelId}` → last-reply ts
 
 // AI decides whether a message is a BUY / purchase / payment intent — covers any
 // phrasing OR language with no keyword list. Cheap yes/no (rotates Ollama →
 // OpenRouter → Gemini via chatRotating). Falls back to the tiny regex only if
 // every provider fails, so buying never silently breaks.
+// RECALL-BIASED (owner: "give AI full control … even if you get a clue that the
+// user wanna buy, send him the msg"). We would much rather send the harmless buy
+// info to a maybe-buyer than miss a real one — so 'yes' on ANY hint of wanting the
+// paid/Pro version or paying, in ANY language, even with typos/broken grammar.
 const BUY_INTENT_SYSTEM =
-  "You are an intent classifier for a Discord bot for 'GameLoop Optimizer' (a Windows tool with a FREE tier and a PAID 'Pro' tier).\n" +
+  "You classify a Discord message for 'GameLoop Optimizer' (a Windows tool with a FREE tier and a PAID 'Pro' tier).\n" +
   "Reply with ONLY one lowercase word: yes or no. No punctuation, no explanation.\n" +
-  "Answer 'yes' ONLY when the user wants to BUY / purchase / pay for the PAID or Pro version/key/subscription, OR asks its PRICE / how much it costs / how to pay — i.e. they intend to spend money on the paid product. This holds in ANY language.\n" +
-  "Answer 'no' for everything else, including: getting a FREE key, subscribing on YouTube for a free key, technical or game help, bug reports, feature requests, greetings, thanks, or unrelated chat.";
+  "Answer 'yes' if there is ANY hint the user wants to BUY / pay for / purchase / upgrade to / or get the PAID or Pro version/key/subscription, or asks its price/cost/how to pay — INCLUDING vague, short, typo'd, broken-grammar, or non-English phrasings (e.g. 'how paid key', 'how buy pro', 'want premium', 'paid one?'). When unsure but money/paid/pro/premium/buy is implied, prefer 'yes'.\n" +
+  "Answer 'no' ONLY when the message is clearly NOT about paying for the paid product — e.g. asking for a FREE key / how to subscribe on YouTube for free, technical or game help, bug reports, greetings, thanks, or unrelated chat.";
 async function isBuyIntent(txt) {
   const s = String(txt || "").trim();
   if (s.length < 3) return false;
