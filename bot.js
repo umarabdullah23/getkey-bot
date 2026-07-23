@@ -244,6 +244,31 @@ const ISSUE_PARSE_PROMPT =
 // conservative #general triage — an image is AI-classified (spam / subscription / issue /
 // other) and acted on, and a TEXT bug/suggestion becomes a ticket. Toggle/scoping:
 const TRIAGE_ALL_CHANNELS = process.env.TRIAGE_ALL_CHANNELS !== "0"; // off ⇒ only #general triages (old behaviour)
+
+// ── ANY-channel BUY intent → canned WhatsApp-only reply (owner 2026-07-23:
+// "make this bot active in any channel … users are dumb, they do anything").
+// Deterministic — no AI involved, so it can never hallucinate or garble the link.
+// #ai-help is excluded (its AI already answers buying with the same info).
+const BUY_REPLY =
+  "Buy ONLY via the owner's WhatsApp: +92 324 4539687 — https://wa.me/923244539687\n" +
+  "⚠️ For your safety: official keys are sold ONLY on that WhatsApp — never through Discord DMs or anyone else, no matter who they say they are. Purchases made anywhere else are at your own risk — we can't verify, help, or refund them.\n" +
+  "Pro pricing: $1.99 / month or $5 / 3 months (full access forever).";
+const BUY_RE = /\b(buy|buying|purchase|purchasing|pay(?:ment| for)?|price|pricing|how much|kitna|kitne|kharid\w*|khareed\w*|acheter|comprar|شراء|اشتري|купить|цена|pro (?:key|version|plan)|paid (?:key|version)|premium)\b/i;
+const BUY_COOLDOWN_MS = Number(process.env.BUY_COOLDOWN_MS || 10 * 60 * 1000); // per-user, anti-spam
+const buyReplied = new Map(); // userId → last-reply ts
+// Returns true when the message was a buy ask and the canned reply was sent (or
+// suppressed by the cooldown) — the caller then skips ticket-triage for it.
+async function maybeBuyReply(msg) {
+  const txt = String(msg.content || "").trim();
+  if (!txt || !BUY_RE.test(txt)) return false;
+  const last = buyReplied.get(msg.author.id) || 0;
+  if (Date.now() - last > BUY_COOLDOWN_MS) {
+    buyReplied.set(msg.author.id, Date.now());
+    await msg.reply(BUY_REPLY).catch(() => {});
+    log(`💰 buy-intent reply → ${msg.author.tag} in #${(msg.channel && msg.channel.name) || msg.channelId}`);
+  }
+  return true;
+}
 const GENERAL_ISSUE_TEXT = process.env.GENERAL_ISSUE_TEXT !== "0"; // text bug/suggestion in general/other → ticket
 const TRIAGE_DENY = new Set(
   (process.env.TRIAGE_DENY || "").split(",").map((s) => s.trim()).filter(Boolean)
@@ -336,10 +361,56 @@ async function openrouterChatOnce(model, question, system = AIHELP_SYSTEM, maxTo
   return t;
 }
 
+// ── Gemini CHAT fallback (owner 2026-07-23: "make sure it's there as backup and
+// the code reliably switches to it"). LAST resort after Ollama + OpenRouter, so
+// #ai-help survives even a double provider outage. Same free-tier key family the
+// vision endpoint uses. Key resolution: GEMINI_API_KEYS (comma-rotated) →
+// GEMINI_API_KEY → the in-repo fallback (private repo only — STRIPPED from the
+// public deploy like the other secrets; set GEMINI_API_KEY on Render to arm it
+// in prod). Every failure falls through to the next key/model — never throws
+// until all combos failed.
+const GEMINI_KEY_FALLBACK = "";
+const GEMINI_CHAT_KEYS = (process.env.GEMINI_API_KEYS || process.env.GEMINI_API_KEY || GEMINI_KEY_FALLBACK)
+  .split(",").map((s) => s.trim()).filter(Boolean);
+const GEMINI_CHAT_MODELS = (process.env.GEMINI_CHAT_MODELS || "gemini-flash-latest,gemini-flash-lite-latest")
+  .split(",").map((s) => s.trim()).filter(Boolean);
+async function geminiChatOnce(model, key, question, system = AIHELP_SYSTEM, maxTokens = AIHELP_MAX_TOKENS, temperature = 0.35) {
+  const r = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: system }] },
+        contents: [{ role: "user", parts: [{ text: question }] }],
+        generationConfig: { temperature, maxOutputTokens: maxTokens },
+      }),
+    },
+  );
+  if (!r.ok) throw new Error(`gemini ${model} HTTP ${r.status}`);
+  const j = await r.json();
+  const text = ((j.candidates && j.candidates[0] && j.candidates[0].content && j.candidates[0].content.parts) || [])
+    .map((p) => p.text || "").join("").trim();
+  if (!text) throw new Error(`gemini ${model} empty reply`);
+  return text;
+}
+// Rotate every key × model combo; throws only when ALL failed.
+async function geminiChatRotating(question, system, maxTokens, temperature) {
+  let lastErr = null;
+  for (const key of GEMINI_CHAT_KEYS) {
+    for (const model of GEMINI_CHAT_MODELS) {
+      try {
+        return await geminiChatOnce(model, key, question, system, maxTokens, temperature);
+      } catch (e) { lastErr = e; }
+    }
+  }
+  throw lastErr || new Error("no gemini chat keys configured");
+}
+
 // Generic chat with the SAME full redundancy as #ai-help (rotate every live Ollama
-// model, then every OpenRouter model) but with a caller-supplied system prompt — used
-// by the #issues parser. Returns the first good reply; throws only if ALL providers
-// failed. Low temperature + small token budget for a crisp structured reply.
+// model, then every OpenRouter model, then Gemini) but with a caller-supplied system
+// prompt — used by the #issues parser. Returns the first good reply; throws only if
+// ALL providers failed. Low temperature + small token budget for a crisp structured reply.
 async function chatRotating(system, question, { maxTokens = 500, temperature = 0 } = {}) {
   const q = String(question).slice(0, 2000);
   const errs = [];
@@ -358,6 +429,11 @@ async function chatRotating(system, question, { maxTokens = 500, temperature = 0
         errs.push(String(e.message).slice(0, 60));
       }
     }
+  }
+  try {
+    return await geminiChatRotating(q, system, maxTokens, temperature); // last-resort backup
+  } catch (e) {
+    errs.push(String(e.message).slice(0, 60));
   }
   throw new Error(`all chat providers failed — ${errs.join(" | ")}`);
 }
@@ -386,6 +462,13 @@ async function askAiHelp(question) {
         log(`  ai-help: ${String(e.message).slice(0, 90)} — trying next model`);
       }
     }
+  }
+  try {
+    const t = await geminiChatRotating(q); // last-resort backup (owner 2026-07-23)
+    log("  ai-help: answered via gemini fallback");
+    return t;
+  } catch (e) {
+    errs.push(String(e.message).slice(0, 70));
   }
   throw new Error(`all chat providers failed — ${errs.join(" | ")}`);
 }
@@ -1703,6 +1786,10 @@ client.on(Events.MessageCreate, async (msg) => {
       return;
     }
 
+    // ── 1b) BUY intent (ANY remaining channel, text) → canned WhatsApp reply.
+    // Fires before triage so a "how do I buy?" never gets mis-filed as a ticket.
+    if (!imageAttachment(msg) && await maybeBuyReply(msg)) return;
+
     // ── 2) EVERY OTHER channel (incl. #general) → unified conservative triage. ──
     // Owner: "integrate bot to every channel". Same behaviour as #general everywhere:
     // an image is AI-classified (spam → delete/ban · subscription → grant via the
@@ -1742,6 +1829,10 @@ module.exports = {
   releaseAnnounceMessage,
   banAppealMessage,
   isChatter,
+  // buy-intent canned reply (any channel)
+  maybeBuyReply,
+  BUY_RE,
+  BUY_REPLY,
 };
 
 if (require.main === module) {
