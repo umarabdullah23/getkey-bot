@@ -290,9 +290,13 @@ const buyReplied = new Map(); // userId → last-reply ts
 async function maybeBuyReply(msg) {
   const txt = String(msg.content || "").trim();
   if (!txt || !BUY_RE.test(txt)) return false;
-  const last = buyReplied.get(msg.author.id) || 0;
+  // Cooldown is per USER *per CHANNEL* (not global) so the same person asking in
+  // two different channels gets an answer in each — a global key made it look
+  // "broken in some channels" while it was just the cooldown from another channel.
+  const key = `${msg.author.id}:${msg.channelId}`;
+  const last = buyReplied.get(key) || 0;
   if (Date.now() - last > BUY_COOLDOWN_MS) {
-    buyReplied.set(msg.author.id, Date.now());
+    buyReplied.set(key, Date.now());
     // Embed first; fall back to plain text if embeds are blocked in this channel.
     await msg.reply({ embeds: [BUY_EMBED] }).catch(() => msg.reply(BUY_REPLY).catch(() => {}));
     log(`💰 buy-intent reply → ${msg.author.tag} in #${(msg.channel && msg.channel.name) || msg.channelId}`);
@@ -1795,6 +1799,14 @@ client.on(Events.MessageCreate, async (msg) => {
     if (msg.author.bot) return;
     const cid = msg.channelId;
 
+    // ── 0) BUY intent — checked FIRST, in EVERY channel, so the clean WhatsApp
+    // embed is uniform everywhere (owner: "sometimes not working / formatting
+    // differs by channel"). Before this, buy asks in #ai-help got AI-generated
+    // text (varying format) and in #get-key were ignored entirely. Text-only, so
+    // image proofs still route to their own flows below. #releases skipped (the
+    // bot's own announcements). Never mis-filed as a ticket (returns early).
+    if (cid !== releasesChannelId() && !imageAttachment(msg) && await maybeBuyReply(msg)) return;
+
     // ── 1) Dedicated per-channel flows (unchanged). ───────────────────────────
     // #ai-help — AI support agent (text questions).
     if (cid === AIHELP_CHANNEL) {
@@ -1815,10 +1827,6 @@ client.on(Events.MessageCreate, async (msg) => {
       if (imageAttachment(msg)) await handle(msg, kind);
       return;
     }
-
-    // ── 1b) BUY intent (ANY remaining channel, text) → canned WhatsApp reply.
-    // Fires before triage so a "how do I buy?" never gets mis-filed as a ticket.
-    if (!imageAttachment(msg) && await maybeBuyReply(msg)) return;
 
     // ── 2) EVERY OTHER channel (incl. #general) → unified conservative triage. ──
     // Owner: "integrate bot to every channel". Same behaviour as #general everywhere:
