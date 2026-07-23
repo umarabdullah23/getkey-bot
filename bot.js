@@ -1820,11 +1820,22 @@ client.on(Events.MessageCreate, async (msg) => {
     }
     // #releases — the bot's own announcements; never triage.
     if (cid === releasesChannelId()) return;
-    // #get-key / #bot-test — the dedicated subscription-proof flow (every image is a
-    // claimed proof; Gemini-first verification). Text there is ignored.
+    // #get-key — the dedicated subscription-proof flow (every image is a claimed
+    // proof; Gemini-first verification). Non-buy text there is ignored.
     const kind = WATCH.get(cid);
-    if (kind === "getkey" || kind === "bottest") {
-      if (imageAttachment(msg)) await handle(msg, kind);
+    if (kind === "getkey") {
+      if (imageAttachment(msg)) await handle(msg, "getkey");
+      return;
+    }
+    // #bot-test — the STAFF sandbox: exercise EVERY flow independently here
+    // (owner: "integrate everything in bot-test so I can test independent too").
+    //   • buy text        → already answered above by the buy embed (step 0)
+    //   • image (proof)    → grant flow (delivers a test key to BOTTEST_DM_USER)
+    //   • other text       → ticket flow (files a GitHub issue, like #general text)
+    // Spam-moderation/ban stays a #general-only test (it's destructive by nature).
+    if (kind === "bottest") {
+      if (imageAttachment(msg)) { await handle(msg, "bottest"); return; }
+      if (GENERAL_ISSUE_TEXT) await handleIssue(msg, { fromTriage: true });
       return;
     }
 
